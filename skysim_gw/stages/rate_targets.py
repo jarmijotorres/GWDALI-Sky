@@ -17,9 +17,10 @@ from skysim_gw.rates import (
     P_BBH,
     P_BHNS,
     P_BNS,
-    RATE_FUNCTIONS,
+    bbh_model_metadata,
     draw_poisson,
     expected_events_in_bin,
+    rate_functions_for_model,
 )
 
 
@@ -61,6 +62,10 @@ def load_config(path):
         raise KeyError(f"Missing configuration entries: {missing}")
     if config["draw_mode"] != "independent_by_type":
         raise ValueError("Only draw_mode='independent_by_type' is implemented")
+    parameters = config.get("bbh_model_parameters", {})
+    if not isinstance(parameters, dict):
+        raise ValueError("bbh_model_parameters must be a JSON object when supplied")
+    rate_functions_for_model(config["model_name"], parameters)
     if config["area_deg2"] <= 0.0:
         raise ValueError("area_deg2 must be positive")
     if config["observing_years"] < 0.0:
@@ -116,7 +121,9 @@ def calculate_grids(zi, zf, mass_edges, config):
     mass_width_grid = dlog_mass[None, :]
 
     expected = {}
-    for source_type, rate_function in RATE_FUNCTIONS.items():
+    for source_type, rate_function in rate_functions_for_model(
+        config["model_name"], config.get("bbh_model_parameters", {})
+    ).items():
         rate_density = rate_function(z_grid, mass_grid)
         expected[source_type] = np.asarray(
             expected_events_in_bin(
@@ -143,7 +150,9 @@ def write_output(path, config, config_path, zi, zf, mass_edges,
     temporary_path = output_path.with_name(output_path.name + ".tmp")
 
     parameter_snapshot = {
-        "BBH": P_BBH,
+        "BBH": bbh_model_metadata(
+            config["model_name"], config.get("bbh_model_parameters", {})
+        ),
         "BNS": P_BNS,
         "BHNS": P_BHNS,
     }

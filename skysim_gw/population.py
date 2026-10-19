@@ -32,6 +32,8 @@ from skysim_gw.settings.population import (
     ZI,
     ZF,
     RANDOM_SEED,
+    BBH_MASS_MODEL,
+    BBH_MASS_PARAMETERS,
 )
 
 
@@ -65,6 +67,33 @@ class PopulationConfig:
     bbh_mu_peak: float = 33.70
     bbh_sigma_peak: float = 3.60
 
+    # Choice of the intrinsic BBH component-mass sampler.  ``bimodal_pairing``
+    # is the production default. It is a deliberately phenomenological model
+    # inspired by the bimodal-remnant scenario of Schneider, Podsiadlowski,
+    # Laplace, and Willcox et al.: components are drawn from low/high mass
+    # populations after first choosing an LL, LH, or HH binary pairing.
+    # It is not a substitute for a population-synthesis calculation.
+    bbh_mass_model: str = "bimodal_pairing"
+
+    # Bimodal-pairing component distributions.  Each component is a
+    # truncated normal in source-frame mass.  Keeping both means, widths, and
+    # bounds explicit makes these parameters suitable for forecast scans.
+    bbh_low_mean_msun: float = 10.0
+    bbh_low_sigma_msun: float = 1.0
+    bbh_low_min_msun: float = 5.0
+    bbh_low_max_msun: float = 15.0
+    bbh_high_mean_msun: float = 30.0
+    bbh_high_sigma_msun: float = 10.0
+    bbh_high_min_msun: float = 20.0
+    bbh_high_max_msun: float = 80.0
+
+    # Unnormalised pairing weights.  The default suppresses the mixed LH
+    # channel relative to LL and HH, as suggested by isolated-binary models.
+    # They are intentionally not presented as a fit to LVK data.
+    bbh_pairing_weight_ll: float = 1.0
+    bbh_pairing_weight_lh: float = 0.20
+    bbh_pairing_weight_hh: float = 1.0
+
     # Menote equations (18)--(20).
     ns_mmin: float = 1.20
     ns_mmax: float = 2.00
@@ -81,7 +110,10 @@ class PopulationConfig:
     aligned_tilt_sigma: float = 1.50
 
 
-CONFIG = PopulationConfig()
+CONFIG = PopulationConfig(
+    bbh_mass_model=BBH_MASS_MODEL,
+    **BBH_MASS_PARAMETERS,
+)
 VALID_SOURCE_TYPES = ("BBH", "BHNS", "BNS")
 
 
@@ -211,8 +243,8 @@ def sample_ns_masses(rng, size, config=CONFIG):
     return _sample_tabulated_pdf(rng, size, 1.0, config.ns_mmax, pdf)
 
 
-def sample_bbh_masses(rng, size, config=CONFIG):
-    """Sample source-frame BBH component masses with m1 >= m2."""
+def _sample_bbh_masses_powerlaw_peak(rng, size, config):
+    """Sample the existing source-frame Power Law + Peak BBH model."""
     normalization_grid = np.linspace(config.bbh_mmin, config.bbh_mmax, 32768)
     taper_grid = _low_mass_smoothing(
         normalization_grid, config.bbh_mmin, config.bbh_delta_m
@@ -226,8 +258,11 @@ def sample_bbh_masses(rng, size, config=CONFIG):
         / (np.sqrt(2.0 * np.pi) * config.bbh_sigma_peak)
         * taper_grid
     )
-    power_norm = np.trapezoid(power_grid, normalization_grid)
-    gaussian_norm = np.trapezoid(gaussian_grid, normalization_grid)
+    # ``trapezoid`` was introduced after NumPy versions still used by some
+    # NERSC notebooks; ``trapz`` is mathematically identical here.
+    integrate = getattr(np, "trapezoid", np.trapz)
+    power_norm = integrate(power_grid, normalization_grid)
+    gaussian_norm = integrate(gaussian_grid, normalization_grid)
 
     def primary_pdf(mass):
         taper = _low_mass_smoothing(mass, config.bbh_mmin, config.bbh_delta_m)
@@ -268,6 +303,82 @@ def sample_bbh_masses(rng, size, config=CONFIG):
         pending = pending[~accepted]
 
     return m1, q * m1
+
+
+def _sample_bbh_masses_bimodal_pairing(rng, size, config):
+    """Sample a phenomenological bimodal BH model with binary pairing.
+
+    First draw the latent pairing class (LL, LH, or HH), then draw each
+    component from its low- or high-mass truncated-normal population.  The
+    resulting source-frame masses are ordered before being returned.  This
+    construction can generate three chirp-mass features without incorrectly
+    imposing a trimodal distribution on individual black-hole masses.
+    """
+    if size == 0:
+        return np.empty(0, dtype=float), np.empty(0, dtype=float)
+
+    component_parameters = (
+        (config.bbh_low_mean_msun, config.bbh_low_sigma_msun,
+         config.bbh_low_min_msun, config.bbh_low_max_msun),
+        (config.bbh_high_mean_msun, config.bbh_high_sigma_msun,
+         config.bbh_high_min_msun, config.bbh_high_max_msun),
+    )
+    for label, (mean, sigma, lower, upper) in zip(
+        ("low", "high"), component_parameters
+    ):
+        if not (sigma > 0.0 and lower < upper and lower <= mean <= upper):
+            raise ValueError(
+                f"Invalid {label}-mass component: require sigma > 0 and "
+                "minimum <= mean <= maximum."
+            )
+
+    weights = np.asarray(
+        (
+            config.bbh_pairing_weight_ll,
+            config.bbh_pairing_weight_lh,
+            config.bbh_pairing_weight_hh,
+        ),
+        dtype=float,
+    )
+    if np.any(~np.isfinite(weights)) or np.any(weights < 0.0) or not weights.sum() > 0.0:
+        raise ValueError("BBH pairing weights must be finite, non-negative, and sum to > 0.")
+    pair_class = rng.choice(3, size=size, p=weights / weights.sum())
+
+    low = lambda count: _sample_truncated_normal(
+        rng, count, config.bbh_low_mean_msun, config.bbh_low_sigma_msun,
+        config.bbh_low_min_msun, config.bbh_low_max_msun,
+    )
+    high = lambda count: _sample_truncated_normal(
+        rng, count, config.bbh_high_mean_msun, config.bbh_high_sigma_msun,
+        config.bbh_high_min_msun, config.bbh_high_max_msun,
+    )
+
+    first = np.empty(size, dtype=float)
+    second = np.empty(size, dtype=float)
+    ll = pair_class == 0
+    lh = pair_class == 1
+    hh = pair_class == 2
+    first[ll], second[ll] = low(ll.sum()), low(ll.sum())
+    first[lh], second[lh] = low(lh.sum()), high(lh.sum())
+    first[hh], second[hh] = high(hh.sum()), high(hh.sum())
+    return np.maximum(first, second), np.minimum(first, second)
+
+
+def sample_bbh_masses(rng, size, config=CONFIG):
+    """Sample source-frame BBH component masses with ``m1 >= m2``.
+
+    ``bimodal_pairing`` is the default flexible phenomenological model with
+    explicit LL/LH/HH pairing weights. ``powerlaw_peak`` remains available
+    for comparison with the historical prescription.
+    """
+    if config.bbh_mass_model == "powerlaw_peak":
+        return _sample_bbh_masses_powerlaw_peak(rng, size, config)
+    if config.bbh_mass_model == "bimodal_pairing":
+        return _sample_bbh_masses_bimodal_pairing(rng, size, config)
+    raise ValueError(
+        f"Unknown BBH mass model {config.bbh_mass_model!r}; choose "
+        "'powerlaw_peak' or 'bimodal_pairing'."
+    )
 
 
 def sample_component_masses(source_type, rng, size, config=CONFIG):

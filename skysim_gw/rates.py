@@ -10,6 +10,7 @@ time, and the source-to-observer time-dilation factor 1/(1+z).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from functools import partial
 
 import numpy as np
 from astropy import units as u
@@ -137,6 +138,23 @@ def rate_bbh(z, log_mass):
     return rate_bbh_bhns(z, log_mass, P_BBH)
 
 
+def rate_bbh_menote_heaviside_scaled(z, log_mass, heaviside_scale=1.0):
+    """Menote BBH with a scaled Heaviside component.
+
+    A scale of zero leaves the Menote Gaussian component alone; a scale of
+    one is exactly :func:`rate_bbh`. Both terms retain Menote's ``psi(z)``
+    redshift evolution.
+    """
+    if not np.isfinite(heaviside_scale) or heaviside_scale < 0.0:
+        raise ValueError("heaviside_scale must be finite and non-negative")
+    value = psi(z, P_BBH) * (
+        heaviside_scale * heaviside_term(z, log_mass, P_BBH)
+        + gaussian_term(z, log_mass, P_BBH)
+    )
+    value = np.where(np.isfinite(value), np.maximum(value, 0.0), 0.0)
+    return _return_scalar_if_scalar(value, z, log_mass)
+
+
 def rate_bhns(z, log_mass):
     """BHNS source-frame rate density [Gpc^-3 yr^-1 dex^-1]."""
     return rate_bbh_bhns(z, log_mass, P_BHNS)
@@ -169,6 +187,427 @@ RATE_FUNCTIONS = {
     "BNS": rate_bns,
     "BHNS": rate_bhns,
 }
+
+
+# Simple BBH alternatives.  Each density model is normalized so its integral
+# across 7 <= log10(Mstar/Msun) <= 12.5 at z=1 equals the Menote BBH integral.
+# This keeps total BBH abundance fixed while comparing host-mass preferences.
+#
+# A20a is Artale et al. (2020a), Table 3, EAGLE100. Its fits predict the
+# per-galaxy rate n_GW [Gyr^-1], not a volumetric density. We expose those
+# fits for future host weighting and use their mass dependence below.
+BBH_MODEL_LOG_MASS_MIN = 7.0
+BBH_MODEL_LOG_MASS_MAX = 12.5
+BBH_MODEL_Z_REFERENCE = 1.0
+A20A_BBH_Z1_1D = {"alpha_1": 0.813, "alpha_2": -3.845}
+A20A_BBH_Z1_3D = {
+    "gamma_1": 1.134,
+    "gamma_2": -0.172,
+    "gamma_3": -0.839,
+    "gamma_4": -8.338,
+}
+# These are for rendering a one-dimensional projection of the 3D fit only.
+# Actual host weighting should pass each galaxy's SFR and absolute Z fraction.
+A20A_COMPARISON_SSFR_YR = 1.0e-9
+A20A_COMPARISON_METALLICITY = 0.02
+
+
+def a20a_bbh_n_gw_1d(log_mass):
+    """A20a BBH z=1 Fit 1D: n_GW in Gyr^-1 per galaxy."""
+    log_mass_array = np.asarray(log_mass, dtype=np.float64)
+    value = 10.0 ** (
+        A20A_BBH_Z1_1D["alpha_1"] * log_mass_array
+        + A20A_BBH_Z1_1D["alpha_2"]
+    )
+    return _return_scalar_if_scalar(value, log_mass)
+
+
+def a20a_bbh_n_gw_3d(log_mass, sfr_msun_per_year, metallicity):
+    """A20a BBH z=1 Fit 3D: n_GW in Gyr^-1 per galaxy.
+
+    ``metallicity`` is the absolute mass fraction Z used by the published fit,
+    not Z/Zsun. Invalid or non-positive SFR/Z inputs return zero.
+    """
+    log_mass_array = np.asarray(log_mass, dtype=np.float64)
+    sfr_array = np.asarray(sfr_msun_per_year, dtype=np.float64)
+    metallicity_array = np.asarray(metallicity, dtype=np.float64)
+    shape = np.broadcast(log_mass_array, sfr_array, metallicity_array).shape
+    log_sfr = np.full(shape, np.nan)
+    log_metallicity = np.full(shape, np.nan)
+    sfr_broadcast = np.broadcast_to(sfr_array, shape)
+    metallicity_broadcast = np.broadcast_to(metallicity_array, shape)
+    np.log10(sfr_broadcast, out=log_sfr, where=sfr_broadcast > 0.0)
+    np.log10(metallicity_broadcast, out=log_metallicity,
+             where=metallicity_broadcast > 0.0)
+    parameters = A20A_BBH_Z1_3D
+    exponent = (
+        parameters["gamma_1"] * np.broadcast_to(log_mass_array, shape)
+        + parameters["gamma_2"] * log_sfr
+        + parameters["gamma_3"] * log_metallicity
+        + parameters["gamma_4"]
+    )
+    value = np.where(np.isfinite(exponent), 10.0 ** exponent, 0.0)
+    return _return_scalar_if_scalar(value, log_mass, sfr_msun_per_year, metallicity)
+
+
+def madau_dickinson_sfrd(z):
+    """Madau-Dickinson (2014) cosmic SFR density [Msun yr^-1 Mpc^-3]."""
+    z_array = np.asarray(z, dtype=np.float64)
+    value = 0.015 * (1.0 + z_array) ** 2.7 / (
+        1.0 + ((1.0 + z_array) / 2.9) ** 5.6
+    )
+    value = np.where(np.isfinite(value) & (value >= 0.0), value, 0.0)
+    return _return_scalar_if_scalar(value, z)
+
+
+def _gaussian_shape(log_mass, mean, sigma):
+    return np.exp(-0.5 * ((np.asarray(log_mass, dtype=np.float64) - mean) / sigma) ** 2)
+
+
+def _flat_shape(log_mass):
+    return np.ones_like(np.asarray(log_mass, dtype=np.float64))
+
+
+def _a20a_1d_shape(log_mass):
+    return np.asarray(a20a_bbh_n_gw_1d(log_mass), dtype=np.float64)
+
+
+def _a20a_3d_comparison_shape(log_mass):
+    log_mass_array = np.asarray(log_mass, dtype=np.float64)
+    return np.asarray(
+        a20a_bbh_n_gw_3d(
+            log_mass_array,
+            A20A_COMPARISON_SSFR_YR * 10.0 ** log_mass_array,
+            A20A_COMPARISON_METALLICITY,
+        ),
+        dtype=np.float64,
+    )
+
+
+def _gaussian_mass_shape(log_mass):
+    return _gaussian_shape(log_mass, mean=10.7, sigma=0.4)
+
+
+def _bimodal_mass_shape(log_mass):
+    return (
+        0.65 * _gaussian_shape(log_mass, mean=8.7, sigma=0.6)
+        + 0.35 * _gaussian_shape(log_mass, mean=10.7, sigma=0.4)
+    )
+
+
+def _reference_bbh_integral():
+    mass_grid = np.linspace(BBH_MODEL_LOG_MASS_MIN, BBH_MODEL_LOG_MASS_MAX, 4097)
+    return float(np.trapz(rate_bbh(BBH_MODEL_Z_REFERENCE, mass_grid), mass_grid))
+
+
+BBH_REFERENCE_INTEGRAL_Z1 = _reference_bbh_integral()
+_MENOTE_PEAK_MASS_GRID = np.linspace(
+    BBH_MODEL_LOG_MASS_MIN, BBH_MODEL_LOG_MASS_MAX, 4097
+)
+MENOTE_BBH_PEAK_RATE_Z1 = float(np.max(
+    rate_bbh(BBH_MODEL_Z_REFERENCE, _MENOTE_PEAK_MASS_GRID)
+))
+MENOTE_GAUSSIAN_MEAN_LOG_MASS = P_BBH["Gc"]
+# A little narrower than the Menote Gaussian component (Gsig=0.41 dex), so
+# its high-mass decline follows the full Menote profile more closely.
+MENOTE_GAUSSIAN_SIGMA_DEX = 0.38
+BIMODAL_LOW_MEAN_LOG_MASS = 8.7
+BIMODAL_LOW_SIGMA_DEX = 0.6
+BIMODAL_LOW_PEAK_FRACTION = 0.5
+BIMODAL_LOW10_PEAK_FRACTION = 0.1
+_BBH_SHAPES = {
+    "flat_bbh_fixed_z": _flat_shape,
+    "gaussian_bbh_fixed_z": _gaussian_mass_shape,
+    "bimodal_bbh_fixed_z": _bimodal_mass_shape,
+    "a20a_bbh_1d_fixed_z": _a20a_1d_shape,
+    "a20a_bbh_3d_fixed_z": _a20a_3d_comparison_shape,
+    "a20a_bbh_3d_madau_sfrd": _a20a_3d_comparison_shape,
+}
+_BBH_SHAPE_NORMALIZATIONS = {}
+for _model_name, _shape_function in _BBH_SHAPES.items():
+    _mass_grid = np.linspace(BBH_MODEL_LOG_MASS_MIN, BBH_MODEL_LOG_MASS_MAX, 4097)
+    _integral = float(np.trapz(_shape_function(_mass_grid), _mass_grid))
+    if not np.isfinite(_integral) or _integral <= 0.0:
+        raise ValueError(f"Invalid BBH comparison shape: {_model_name}")
+    _BBH_SHAPE_NORMALIZATIONS[_model_name] = BBH_REFERENCE_INTEGRAL_Z1 / _integral
+del _integral, _mass_grid, _model_name, _shape_function
+
+
+def _matched_bbh_density(z, log_mass, shape_name, redshift_factor=None):
+    factor = 1.0 if redshift_factor is None else redshift_factor(z)
+    value = _BBH_SHAPE_NORMALIZATIONS[shape_name] * _BBH_SHAPES[shape_name](log_mass) * factor
+    value = np.where(np.isfinite(value), np.maximum(value, 0.0), 0.0)
+    return _return_scalar_if_scalar(value, z, log_mass)
+
+
+def rate_bbh_flat_fixed_z(z, log_mass):
+    return _matched_bbh_density(z, log_mass, "flat_bbh_fixed_z")
+
+
+def _rate_bbh_gaussian_toy_fixed_z(z, log_mass):
+    return _matched_bbh_density(z, log_mass, "gaussian_bbh_fixed_z")
+
+
+def _rate_bbh_bimodal_matched_total_legacy(z, log_mass):
+    return _matched_bbh_density(z, log_mass, "bimodal_bbh_fixed_z")
+
+
+def rate_bbh_a20a_1d_fixed_z(z, log_mass):
+    return _matched_bbh_density(z, log_mass, "a20a_bbh_1d_fixed_z")
+
+
+def rate_bbh_a20a_3d_fixed_z(z, log_mass):
+    return _matched_bbh_density(z, log_mass, "a20a_bbh_3d_fixed_z")
+
+
+def _madau_sfrd_relative_to_z1(z):
+    return np.asarray(madau_dickinson_sfrd(z)) / madau_dickinson_sfrd(BBH_MODEL_Z_REFERENCE)
+
+
+def rate_bbh_a20a_3d_madau_sfrd(z, log_mass):
+    return _matched_bbh_density(
+        z, log_mass, "a20a_bbh_3d_madau_sfrd", _madau_sfrd_relative_to_z1
+    )
+
+
+def _menote_a20a1d_capped_shape(log_mass):
+    """Parameter-free low-mass cap: min(Menote, A20a-1D), both at z=1."""
+    log_mass_array = np.asarray(log_mass, dtype=np.float64)
+    return np.minimum(
+        rate_bbh(BBH_MODEL_Z_REFERENCE, log_mass_array),
+        rate_bbh_a20a_1d_fixed_z(BBH_MODEL_Z_REFERENCE, log_mass_array),
+    )
+
+
+_CAPPED_MASS_GRID = np.linspace(
+    BBH_MODEL_LOG_MASS_MIN, BBH_MODEL_LOG_MASS_MAX, 4097
+)
+_CAPPED_RATE_GRID = _menote_a20a1d_capped_shape(_CAPPED_MASS_GRID)
+BBH_A20A_CAPPED_INTEGRAL_Z1 = float(np.trapz(_CAPPED_RATE_GRID, _CAPPED_MASS_GRID))
+BBH_A20A_CAPPED_MATCH_FACTOR = (
+    BBH_REFERENCE_INTEGRAL_Z1 / BBH_A20A_CAPPED_INTEGRAL_Z1
+)
+BBH_A20A_CAPPED_MEAN_LOG_MASS = float(
+    np.trapz(_CAPPED_MASS_GRID * _CAPPED_RATE_GRID, _CAPPED_MASS_GRID)
+    / BBH_A20A_CAPPED_INTEGRAL_Z1
+)
+BBH_A20A_CAPPED_SIGMA_LOG_MASS = float(np.sqrt(
+    np.trapz(
+        (_CAPPED_MASS_GRID - BBH_A20A_CAPPED_MEAN_LOG_MASS) ** 2
+        * _CAPPED_RATE_GRID,
+        _CAPPED_MASS_GRID,
+    ) / BBH_A20A_CAPPED_INTEGRAL_Z1
+))
+_CAPPED_GAUSSIAN_UNIT_GRID = _gaussian_shape(
+    _CAPPED_MASS_GRID,
+    BBH_A20A_CAPPED_MEAN_LOG_MASS,
+    BBH_A20A_CAPPED_SIGMA_LOG_MASS,
+)
+_CAPPED_GAUSSIAN_AMPLITUDE = BBH_A20A_CAPPED_INTEGRAL_Z1 / float(
+    np.trapz(_CAPPED_GAUSSIAN_UNIT_GRID, _CAPPED_MASS_GRID)
+)
+del _CAPPED_GAUSSIAN_UNIT_GRID
+
+
+def rate_bbh_menote_a20a1d_capped(z, log_mass):
+    """Menote BBH density capped by the matched A20a 1D density at z=1.
+
+    This intentionally lowers the total rate: it never raises a Menote value.
+    """
+    value = _menote_a20a1d_capped_shape(log_mass)
+    return _return_scalar_if_scalar(value, z, log_mass)
+
+
+def rate_bbh_menote_a20a1d_capped_matched_total(z, log_mass):
+    """Capped BBH shape rescaled to the Menote z=1 total (sensitivity test)."""
+    value = BBH_A20A_CAPPED_MATCH_FACTOR * _menote_a20a1d_capped_shape(log_mass)
+    return _return_scalar_if_scalar(value, z, log_mass)
+
+
+def rate_bbh_gaussian_fixed_z(
+    z,
+    log_mass,
+    peak_amplitude=MENOTE_BBH_PEAK_RATE_Z1,
+    sigma_dex=MENOTE_GAUSSIAN_SIGMA_DEX,
+):
+    """Narrow Menote-centred Gaussian BBH comparison density.
+
+    ``peak_amplitude`` is in Gpc^-3 yr^-1 dex^-1 and is deliberately exposed
+    as a model parameter. Its default is the full Menote BBH peak at z=1.
+    """
+    if peak_amplitude < 0.0 or sigma_dex <= 0.0:
+        raise ValueError("peak_amplitude must be non-negative and sigma_dex positive")
+    value = peak_amplitude * _gaussian_shape(
+        log_mass, MENOTE_GAUSSIAN_MEAN_LOG_MASS, sigma_dex
+    )
+    return _return_scalar_if_scalar(value, z, log_mass)
+
+
+def rate_bbh_a20a_lowmass_gaussian_fixed_z(
+    z,
+    log_mass,
+    peak_amplitude=MENOTE_BBH_PEAK_RATE_Z1,
+    sigma_dex=MENOTE_GAUSSIAN_SIGMA_DEX,
+):
+    """A20a low-mass power law continuously joined to a narrow Gaussian.
+
+    Below the Menote Gaussian centre, this is A20a's z=1 1D power law in
+    stellar mass, normalized to equal ``peak_amplitude`` at the join. Above
+    the join, it is the narrow Gaussian. Thus the low-mass branch is a line
+    in log(R)-log(Mstar) space, rather than a Gaussian tail.
+    """
+    if peak_amplitude < 0.0 or sigma_dex <= 0.0:
+        raise ValueError("peak_amplitude must be non-negative and sigma_dex positive")
+    log_mass_array = np.asarray(log_mass, dtype=np.float64)
+    a20a_at_join = a20a_bbh_n_gw_1d(MENOTE_GAUSSIAN_MEAN_LOG_MASS)
+    low_mass_value = peak_amplitude * (
+        np.asarray(a20a_bbh_n_gw_1d(log_mass_array)) / a20a_at_join
+    )
+    high_mass_value = peak_amplitude * _gaussian_shape(
+        log_mass_array, MENOTE_GAUSSIAN_MEAN_LOG_MASS, sigma_dex
+    )
+    value = np.where(
+        log_mass_array < MENOTE_GAUSSIAN_MEAN_LOG_MASS,
+        low_mass_value,
+        high_mass_value,
+    )
+    value = np.where(np.isfinite(value), np.maximum(value, 0.0), 0.0)
+    return _return_scalar_if_scalar(value, z, log_mass)
+
+
+def rate_bbh_bimodal_fixed_z(
+    z,
+    log_mass,
+    low_peak_amplitude=None,
+    low_sigma_dex=BIMODAL_LOW_SIGMA_DEX,
+    high_peak_amplitude=MENOTE_BBH_PEAK_RATE_Z1,
+    high_sigma_dex=MENOTE_GAUSSIAN_SIGMA_DEX,
+):
+    """Bimodal BBH comparison density with a configurable low-mass peak.
+
+    The default low-mass peak is half the Menote BBH z=1 peak. All amplitudes
+    use Gpc^-3 yr^-1 dex^-1 and are intentionally not total-rate matched.
+    """
+    if low_peak_amplitude is None:
+        low_peak_amplitude = BIMODAL_LOW_PEAK_FRACTION * MENOTE_BBH_PEAK_RATE_Z1
+    if (
+        low_peak_amplitude < 0.0
+        or high_peak_amplitude < 0.0
+        or low_sigma_dex <= 0.0
+        or high_sigma_dex <= 0.0
+    ):
+        raise ValueError("Bimodal amplitudes must be non-negative and widths positive")
+    value = (
+        low_peak_amplitude * _gaussian_shape(
+            log_mass, BIMODAL_LOW_MEAN_LOG_MASS, low_sigma_dex
+        )
+        + high_peak_amplitude * _gaussian_shape(
+            log_mass, MENOTE_GAUSSIAN_MEAN_LOG_MASS, high_sigma_dex
+        )
+    )
+    return _return_scalar_if_scalar(value, z, log_mass)
+
+
+def rate_bbh_bimodal_low10_fixed_z(
+    z,
+    log_mass,
+    low_peak_amplitude=None,
+    low_sigma_dex=BIMODAL_LOW_SIGMA_DEX,
+    high_peak_amplitude=MENOTE_BBH_PEAK_RATE_Z1,
+    high_sigma_dex=MENOTE_GAUSSIAN_SIGMA_DEX,
+):
+    """Bimodal model whose default low-mass peak is 10% of Menote's peak."""
+    if low_peak_amplitude is None:
+        low_peak_amplitude = BIMODAL_LOW10_PEAK_FRACTION * MENOTE_BBH_PEAK_RATE_Z1
+    return rate_bbh_bimodal_fixed_z(
+        z,
+        log_mass,
+        low_peak_amplitude=low_peak_amplitude,
+        low_sigma_dex=low_sigma_dex,
+        high_peak_amplitude=high_peak_amplitude,
+        high_sigma_dex=high_sigma_dex,
+    )
+
+
+BBH_RATE_MODELS = {
+    "menote_bbh": rate_bbh,
+    "menote_heaviside_scaled_bbh": rate_bbh_menote_heaviside_scaled,
+    "flat_bbh_fixed_z": rate_bbh_flat_fixed_z,
+    "gaussian_bbh_fixed_z": rate_bbh_gaussian_fixed_z,
+    "bimodal_bbh_fixed_z": rate_bbh_bimodal_fixed_z,
+    "bimodal_bbh_low10_fixed_z": rate_bbh_bimodal_low10_fixed_z,
+}
+
+
+def rate_functions_for_model(model_name, model_parameters=None):
+    """Select a BBH model while retaining Menote BNS/BHNS templates."""
+    if model_name not in BBH_RATE_MODELS:
+        choices = ", ".join(sorted(BBH_RATE_MODELS))
+        raise ValueError(f"Unknown model_name {model_name!r}; choose from: {choices}")
+    parameters = {} if model_parameters is None else dict(model_parameters)
+    permitted = {
+        "menote_heaviside_scaled_bbh": {"heaviside_scale"},
+        "gaussian_bbh_fixed_z": {"peak_amplitude", "sigma_dex"},
+        "bimodal_bbh_fixed_z": {
+            "low_peak_amplitude",
+            "low_sigma_dex",
+            "high_peak_amplitude",
+            "high_sigma_dex",
+        },
+        "bimodal_bbh_low10_fixed_z": {
+            "low_peak_amplitude",
+            "low_sigma_dex",
+            "high_peak_amplitude",
+            "high_sigma_dex",
+        },
+    }
+    unknown = set(parameters) - permitted.get(model_name, set())
+    if unknown:
+        raise ValueError(
+            f"Unsupported parameters for {model_name}: {sorted(unknown)}"
+        )
+    functions = RATE_FUNCTIONS.copy()
+    functions["BBH"] = partial(BBH_RATE_MODELS[model_name], **parameters)
+    return functions
+
+
+def bbh_model_metadata(model_name, model_parameters=None):
+    """Return serializable provenance for the chosen BBH model."""
+    parameters = {} if model_parameters is None else dict(model_parameters)
+    rate_functions_for_model(model_name, parameters)
+    return {
+        "model_name": model_name,
+        "model_parameters": parameters,
+        "normalization": (
+            "menote_integral_matched" if model_name == "flat_bbh_fixed_z"
+            else "direct_amplitudes"
+        ),
+        "reference_redshift": BBH_MODEL_Z_REFERENCE,
+        "mass_range_log10_msun": [BBH_MODEL_LOG_MASS_MIN, BBH_MODEL_LOG_MASS_MAX],
+        "reference_integral": BBH_REFERENCE_INTEGRAL_Z1,
+        "a20a_bbh_z1_1d": A20A_BBH_Z1_1D,
+        "a20a_bbh_z1_3d": A20A_BBH_Z1_3D,
+        "a20a_3d_comparison_ssfr_yr": A20A_COMPARISON_SSFR_YR,
+        "a20a_3d_comparison_metallicity": A20A_COMPARISON_METALLICITY,
+        "gaussian_defaults": {
+            "mean_log10_mstar": MENOTE_GAUSSIAN_MEAN_LOG_MASS,
+            "sigma_dex": MENOTE_GAUSSIAN_SIGMA_DEX,
+            "peak_amplitude": MENOTE_BBH_PEAK_RATE_Z1,
+        },
+        "menote_heaviside_scaled": {
+            "heaviside_scale": "0 = Gaussian-only; 1 = original Menote BBH",
+        },
+        "bimodal_defaults": {
+            "low_mean_log10_mstar": BIMODAL_LOW_MEAN_LOG_MASS,
+            "low_sigma_dex": BIMODAL_LOW_SIGMA_DEX,
+            "low_peak_fraction_of_menote_peak": BIMODAL_LOW_PEAK_FRACTION,
+            "high_mean_log10_mstar": MENOTE_GAUSSIAN_MEAN_LOG_MASS,
+            "high_sigma_dex": MENOTE_GAUSSIAN_SIGMA_DEX,
+        },
+        "bimodal_low10_default_low_peak_fraction_of_menote_peak": (
+            BIMODAL_LOW10_PEAK_FRACTION
+        ),
+    }
 
 
 def solid_angle_sr(area_deg2):
@@ -317,11 +756,22 @@ def draw_poisson(expected, rng=None):
 
 
 __all__ = [
+    "A20A_BBH_Z1_1D",
+    "A20A_BBH_Z1_3D",
+    "BBH_RATE_MODELS",
+    "BBH_A20A_CAPPED_INTEGRAL_Z1",
+    "BBH_A20A_CAPPED_MATCH_FACTOR",
+    "BBH_A20A_CAPPED_MEAN_LOG_MASS",
+    "BBH_A20A_CAPPED_SIGMA_LOG_MASS",
+    "BBH_REFERENCE_INTEGRAL_Z1",
     "OUTER_RIM_COSMOLOGY",
     "P_BBH",
     "P_BHNS",
     "P_BNS",
     "RATE_FUNCTIONS",
+    "a20a_bbh_n_gw_1d",
+    "a20a_bbh_n_gw_3d",
+    "bbh_model_metadata",
     "differential_comoving_volume",
     "draw_poisson",
     "expected_events_all_slices",
@@ -329,10 +779,22 @@ __all__ = [
     "expected_events_in_bin",
     "gaussian_term",
     "heaviside_term",
+    "madau_dickinson_sfrd",
     "psi",
     "rate_bbh",
+    "rate_bbh_a20a_1d_fixed_z",
+    "rate_bbh_a20a_3d_fixed_z",
+    "rate_bbh_a20a_3d_madau_sfrd",
     "rate_bbh_bhns",
+    "rate_bbh_bimodal_fixed_z",
+    "rate_bbh_bimodal_low10_fixed_z",
+    "rate_bbh_flat_fixed_z",
+    "rate_bbh_gaussian_fixed_z",
+    "rate_bbh_menote_heaviside_scaled",
+    "rate_bbh_menote_a20a1d_capped",
+    "rate_bbh_menote_a20a1d_capped_matched_total",
     "rate_bhns",
     "rate_bns",
+    "rate_functions_for_model",
     "solid_angle_sr",
 ]

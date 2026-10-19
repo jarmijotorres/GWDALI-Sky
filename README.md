@@ -11,6 +11,9 @@ python3 -m skysim_gw --dry-run snr
 ```
 
 Read [the pipeline guide](docs/PIPELINE.md) for execution order, configuration, portability, and known missing inputs. The [scientific methodology](docs/METHODOLOGY.md) explains the analysis and product conventions.
+For a review-oriented account of the complete catalogue construction, including
+the merger-rate-density target stage and its present configuration limits, see
+[the pipeline review guide](docs/PIPELINE_REVIEW.md).
 
 Set `SOURCE_FILE` in `skysim_gw/settings/population.py` to the exported seed-host HDF5, then start with:
 
@@ -19,6 +22,13 @@ python -m skysim_gw prepare
 ```
 
 The existing path remains a placeholder. See the pipeline guide for the required HDF5 schema. `assign-hosts` is only for rebuilding that file at NERSC; skip it and `rate-targets` when reusing existing seeds.
+
+### NERSC SkySim5000 host catalogue
+
+The fixed GCR catalogue name is `skysim5000_v1.2`. Its verified host-assignment
+ID column is `galaxy_id`. The catalogue provides every required quantity:
+`galaxy_id`, `ra`, `dec`, `redshift_true`, `redshift`, `stellar_mass`,
+`halo_mass`, and `is_central`.
 
 ## Repository layout
 

@@ -10,3 +10,10 @@ OUTPUT_DIR = BASE_DIR / "GWInputCatalogs"
 SOURCE_TYPES = ("BBH", "BHNS", "BNS")
 
 RANDOM_SEED = 12345
+
+# BBH intrinsic component-mass prescription.  The phenomenological
+# ``bimodal_pairing`` model is the production default; ``powerlaw_peak``
+# remains available for comparison. Override any fields in BBH_MASS_PARAMETERS
+# while retaining the remaining PopulationConfig defaults.
+BBH_MASS_MODEL = "bimodal_pairing"
+BBH_MASS_PARAMETERS = {}
