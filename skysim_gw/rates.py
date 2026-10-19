@@ -199,6 +199,9 @@ RATE_FUNCTIONS = {
 BBH_MODEL_LOG_MASS_MIN = 7.0
 BBH_MODEL_LOG_MASS_MAX = 12.5
 BBH_MODEL_Z_REFERENCE = 1.0
+_MENOTE_MATCHED_MASS_GRID = np.linspace(
+    BBH_MODEL_LOG_MASS_MIN, BBH_MODEL_LOG_MASS_MAX, 4097
+)
 A20A_BBH_Z1_1D = {"alpha_1": 0.813, "alpha_2": -3.845}
 A20A_BBH_Z1_3D = {
     "gamma_1": 1.134,
@@ -210,6 +213,42 @@ A20A_BBH_Z1_3D = {
 # Actual host weighting should pass each galaxy's SFR and absolute Z fraction.
 A20A_COMPARISON_SSFR_YR = 1.0e-9
 A20A_COMPARISON_METALLICITY = 0.02
+
+
+def rate_bbh_menote_heaviside_scaled_matched_total(
+    z, log_mass, heaviside_scale=1.0
+):
+    """Scale Menote's Heaviside term while preserving its total rate at each z.
+
+    ``C(z)`` is calculated so the integral over
+    7 <= log10(Mstar/Msun) <= 12.5 equals the original Menote BBH integral
+    at every redshift. This makes ``heaviside_scale`` a host-mass-shape
+    parameter rather than a total-rate parameter.
+    """
+    if not np.isfinite(heaviside_scale) or heaviside_scale < 0.0:
+        raise ValueError("heaviside_scale must be finite and non-negative")
+
+    z_array = np.asarray(z, dtype=np.float64)
+    integration_z = z_array[..., None]
+    heaviside = heaviside_term(integration_z, _MENOTE_MATCHED_MASS_GRID, P_BBH)
+    gaussian = gaussian_term(integration_z, _MENOTE_MATCHED_MASS_GRID, P_BBH)
+    reference_integral = np.trapz(
+        heaviside + gaussian, _MENOTE_MATCHED_MASS_GRID, axis=-1
+    )
+    scaled_integral = np.trapz(
+        heaviside_scale * heaviside + gaussian,
+        _MENOTE_MATCHED_MASS_GRID, axis=-1,
+    )
+    correction = np.divide(
+        reference_integral, scaled_integral,
+        out=np.zeros_like(reference_integral), where=scaled_integral > 0.0,
+    )
+    unnormalized = rate_bbh_menote_heaviside_scaled(
+        z_array, log_mass, heaviside_scale=heaviside_scale
+    )
+    value = correction * np.asarray(unnormalized, dtype=np.float64)
+    value = np.where(np.isfinite(value), np.maximum(value, 0.0), 0.0)
+    return _return_scalar_if_scalar(value, z, log_mass)
 
 
 def a20a_bbh_n_gw_1d(log_mass):
@@ -532,6 +571,9 @@ def rate_bbh_bimodal_low10_fixed_z(
 BBH_RATE_MODELS = {
     "menote_bbh": rate_bbh,
     "menote_heaviside_scaled_bbh": rate_bbh_menote_heaviside_scaled,
+    "menote_heaviside_scaled_matched_total_bbh": (
+        rate_bbh_menote_heaviside_scaled_matched_total
+    ),
     "flat_bbh_fixed_z": rate_bbh_flat_fixed_z,
     "gaussian_bbh_fixed_z": rate_bbh_gaussian_fixed_z,
     "bimodal_bbh_fixed_z": rate_bbh_bimodal_fixed_z,
@@ -547,6 +589,7 @@ def rate_functions_for_model(model_name, model_parameters=None):
     parameters = {} if model_parameters is None else dict(model_parameters)
     permitted = {
         "menote_heaviside_scaled_bbh": {"heaviside_scale"},
+        "menote_heaviside_scaled_matched_total_bbh": {"heaviside_scale"},
         "gaussian_bbh_fixed_z": {"peak_amplitude", "sigma_dex"},
         "bimodal_bbh_fixed_z": {
             "low_peak_amplitude",
@@ -579,7 +622,9 @@ def bbh_model_metadata(model_name, model_parameters=None):
         "model_name": model_name,
         "model_parameters": parameters,
         "normalization": (
-            "menote_integral_matched" if model_name == "flat_bbh_fixed_z"
+            "menote_integral_matched_per_redshift"
+            if model_name == "menote_heaviside_scaled_matched_total_bbh"
+            else "menote_integral_matched" if model_name == "flat_bbh_fixed_z"
             else "direct_amplitudes"
         ),
         "reference_redshift": BBH_MODEL_Z_REFERENCE,
@@ -596,6 +641,12 @@ def bbh_model_metadata(model_name, model_parameters=None):
         },
         "menote_heaviside_scaled": {
             "heaviside_scale": "0 = Gaussian-only; 1 = original Menote BBH",
+        },
+        "menote_heaviside_scaled_matched_total": {
+            "normalization": (
+                "C(z) preserves the original Menote mass-integrated rate at "
+                "every redshift over 7 <= log10(Mstar/Msun) <= 12.5"
+            ),
         },
         "bimodal_defaults": {
             "low_mean_log10_mstar": BIMODAL_LOW_MEAN_LOG_MASS,
@@ -791,6 +842,7 @@ __all__ = [
     "rate_bbh_flat_fixed_z",
     "rate_bbh_gaussian_fixed_z",
     "rate_bbh_menote_heaviside_scaled",
+    "rate_bbh_menote_heaviside_scaled_matched_total",
     "rate_bbh_menote_a20a1d_capped",
     "rate_bbh_menote_a20a1d_capped_matched_total",
     "rate_bhns",

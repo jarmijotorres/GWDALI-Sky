@@ -174,6 +174,7 @@ changes the host population, not merely the total event count.
 The rate-target stage now accepts a `model_name` which selects the BBH density
 while retaining the existing Menote BNS and BHNS density models.  The available
 BBH choices are `menote_bbh`, `menote_heaviside_scaled_bbh`,
+`menote_heaviside_scaled_matched_total_bbh`,
 `flat_bbh_fixed_z`, `gaussian_bbh_fixed_z`, `bimodal_bbh_fixed_z`, and
 `bimodal_bbh_low10_fixed_z`.
 
@@ -201,3 +202,9 @@ directly: supply `bbh_model_parameters: {"heaviside_scale": f_H}`. At
 reproduces `menote_bbh`. The standard Menote `psi(z)` factor applies to both
 terms. The discontinuous A20a-low-mass splice is retained only as a deprecated
 internal helper and is not selectable.
+
+`menote_heaviside_scaled_matched_total_bbh` uses the same `heaviside_scale`
+parameter but applies a redshift-dependent factor `C(z)`. It preserves the
+full Menote BBH rate integrated over `7 <= log10(Mstar/Msun) <= 12.5` at every
+redshift, so `f_H=0` and `f_H=0.1` alter the host-mass profile without changing
+the expected total BBH abundance.
