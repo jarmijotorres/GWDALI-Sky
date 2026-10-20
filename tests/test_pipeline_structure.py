@@ -39,7 +39,7 @@ class PipelineStructureTests(unittest.TestCase):
     def test_reject_options_that_would_be_silently_ignored(self):
         with patch.object(cli.importlib, 'import_module') as run, contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
-                cli.main(['snr', '--wrong-option'])
+                cli.main(['check-snr', '--wrong-option'])
         run.assert_not_called()
 
     def test_legacy_import_is_same_module(self):

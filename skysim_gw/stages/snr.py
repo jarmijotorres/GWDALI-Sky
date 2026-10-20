@@ -5,6 +5,7 @@ same command resumes unfinished rows. Each result row maps to the original
 injection catalogue through ``source_index``.
 """
 
+import argparse
 from pathlib import Path
 import os
 import tempfile
@@ -66,6 +67,23 @@ RESULT_DTYPE = np.dtype([
 
 
 from skysim_gw.products import snr_output_path as output_path
+
+
+def parse_arguments(argv=None):
+    """Parse optional explicit paths for tagged realization catalogues."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--input-file", type=Path,
+        help="Prepared GWDALI NPZ catalogue; overrides settings INPUT_DIR.",
+    )
+    parser.add_argument(
+        "--output-file", type=Path,
+        help="Checkpointed SNR NPZ output; overrides settings OUTPUT_DIR.",
+    )
+    arguments = parser.parse_args(argv)
+    if (arguments.input_file is None) != (arguments.output_file is None):
+        parser.error("--input-file and --output-file must be supplied together")
+    return arguments
 
 
 def empty_results(number_of_sources):
@@ -148,15 +166,24 @@ def parse_snr_result(raw_result, number_of_detectors):
     return detector_snrs, network_snr
 
 
-def main():
+def main(argv=None):
+    arguments = parse_arguments(argv)
     source_type = SOURCE_TYPE.upper()
     if source_type not in APPROXIMANTS:
         raise ValueError(f"Unknown source type {source_type!r}")
     if CHECKPOINT_EVERY <= 0 or PRINT_EVERY <= 0:
         raise ValueError("CHECKPOINT_EVERY and PRINT_EVERY must be positive")
 
-    input_path = catalog_path(INPUT_DIR, source_type, ZI, ZF)
-    save_path = output_path(OUTPUT_DIR, source_type, ZI, ZF)
+    input_path = (
+        arguments.input_file
+        if arguments.input_file is not None
+        else catalog_path(INPUT_DIR, source_type, ZI, ZF)
+    )
+    save_path = (
+        arguments.output_file
+        if arguments.output_file is not None
+        else output_path(OUTPUT_DIR, source_type, ZI, ZF)
+    )
     catalogue, _ = load_gwdali_catalogue(input_path)
     detectors = get_lvk_detectors(include_kagra=INCLUDE_KAGRA)
     detector_labels = LVK_LABELS[:len(detectors)]

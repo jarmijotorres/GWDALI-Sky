@@ -38,7 +38,7 @@ def main(argv=None):
     forwarded = args.stage_args
     if forwarded[:1] == ['--']:
         forwarded = forwarded[1:]
-    cli_stages = {'rate-targets', 'assign-hosts', 'detect', 'doublet-parallel', 'doublet-maps'}
+    cli_stages = {'rate-targets', 'assign-hosts', 'snr', 'detect', 'doublet-parallel', 'doublet-maps'}
     if forwarded and args.stage not in cli_stages:
         parser.error(f'{args.stage} uses skysim_gw/settings/; it accepts no command-line options')
     if args.dry_run:

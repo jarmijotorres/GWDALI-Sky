@@ -57,6 +57,9 @@ Prefix commands with `python -m skysim_gw`. The normal workflow starts from the 
 python -m skysim_gw prepare
 python -m skysim_gw check-snr
 python -m skysim_gw snr
+python -m skysim_gw snr -- \
+  --input-file /path/to/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz \
+  --output-file /path/to/skysim5000_BBH_lvk_snr_fh0_r0000_z0.0000_1.0000.npz
 python -m skysim_gw detect /path/to/snr.npz /path/to/detected_indices.txt
 python -m skysim_gw check-localisation
 python -m skysim_gw doublet-serial

@@ -23,6 +23,54 @@ python -m skysim_gw prepare
 
 The existing path remains a placeholder. See the pipeline guide for the required HDF5 schema. `assign-hosts` is only for rebuilding that file at NERSC; skip it and `rate-targets` when reusing existing seeds.
 
+## Tagged BBH realization workflow
+
+For the GWseeds realizations, keep the host selections and the prepared
+populations separate by model:
+
+```text
+GWseeds/
+├── Seeds/
+│   ├── gw_hosts_fh0_r0000.hdf5 ... gw_hosts_fh0_r0009.hdf5
+│   └── gw_hosts_fh1_r0000.hdf5 ... gw_hosts_fh1_r0009.hdf5
+└── Populations/
+    ├── fh0/
+    └── fh1/
+```
+
+The local batch helper prepares the 20 tagged host files as BBH catalogues,
+using the configured bimodal mass distribution. It assigns an independent,
+deterministic random stream to each model/realization pair:
+
+```bash
+python tmp/prepare_bbh_realizations.py \
+  --input-dir /path/to/GWseeds/Seeds \
+  --output-root /path/to/GWseeds/Populations \
+  --zi 0.0 --zf 1.0 --seed 12345
+```
+
+This produces files such as
+`Populations/fh0/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz`.
+Each catalogue contains the sampled BBH parameters (including source-frame
+and detector-frame masses, luminosity distance, sky position, orientation,
+spins, and `redshift_true`) plus provenance metadata. The full host-galaxy
+properties, such as galaxy ID and stellar mass, remain in the corresponding
+file under `Seeds/`.
+
+Run SNR estimation per prepared realization by passing its explicit input and
+output paths. This preserves the realization tag rather than using the
+standard redshift-only filename:
+
+```bash
+python -m skysim_gw snr -- \
+  --input-file /path/to/GWseeds/Populations/fh0/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz \
+  --output-file /path/to/GWseeds/Populations/fh0/skysim5000_BBH_lvk_snr_fh0_r0000_z0.0000_1.0000.npz
+```
+
+The usual checkpoint/resume behavior still applies; a completed SNR output
+must match the input catalogue and detector-configuration metadata before it
+is reused. Detector/network settings are configured in `settings/snr.py`.
+
 ### NERSC SkySim5000 host catalogue
 
 The fixed GCR catalogue name is `skysim5000_v1.2`. Its verified host-assignment
