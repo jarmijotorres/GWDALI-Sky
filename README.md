@@ -121,7 +121,7 @@ Importing these modules does not launch catalogue calculations. Individual modul
 
 ## Provenance and validation
 
-`source_XXXXXX.npz` identifies original **prepared-catalogue row XXXXXX**, even after detection filtering. Match catalogues using `source_index`; assign GW redshift slices using injected `redshift_true`. Preserve the distinction between Fisher covariance maps and maps of actual Doublet posterior samples.
+`source_XXXXXX.npz` identifies original **prepared-catalogue row XXXXXX**, even after detection filtering. A source index is unique only within one population realization: keep its samples in a tagged directory such as `doublet/fh0/r0000/`. The parallel Doublet adapter records the population path, SNR path, and realization tag in every source file. Match catalogues using `source_index`; assign GW redshift slices using injected `redshift_true`. Preserve the distinction between Fisher covariance maps and maps of actual Doublet posterior samples.
 
 The original scripts were tested end-to-end on NERSC by the author. This refactor has passed syntax and eight structural checks locally, plus a comparison confirming preserved extracted settings and 115 unchanged function/class syntax trees. It has **not** been numerically revalidated: this machine lacks NumPy, Astropy, h5py, healpy, and GWDALI.
 

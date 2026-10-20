@@ -33,10 +33,22 @@ def _limit_native_threads(n: int) -> None:
     os.environ.setdefault("XLA_FLAGS", "--xla_cpu_multi_thread_eigen=false")
 
 
-def _init_worker(module_name: str, native_threads: int, output_dir: str) -> None:
+def _init_worker(
+    module_name: str,
+    native_threads: int,
+    output_dir: str,
+    input_file: str | None,
+    snr_file: str | None,
+) -> None:
     global _RUN_EVENT, _OUTPUT_DIR
     _limit_native_threads(native_threads)
     _OUTPUT_DIR = output_dir
+    if input_file is not None:
+        os.environ["GWDALI_INPUT_FILE"] = input_file
+        os.environ["GWDALI_SNR_FILE"] = snr_file
+    else:
+        os.environ.pop("GWDALI_INPUT_FILE", None)
+        os.environ.pop("GWDALI_SNR_FILE", None)
     module = importlib.import_module(module_name)
     _RUN_EVENT = module.run_event
 
@@ -86,6 +98,10 @@ def main() -> int:
                     help="importable module containing run_event(source_index)")
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--indices", required=True, help="text file: one detected catalogue index per line")
+    ap.add_argument("--input-file",
+                    help="Prepared population NPZ; passed to the standard adapter.")
+    ap.add_argument("--snr-file",
+                    help="Matched completed SNR NPZ; passed to the standard adapter.")
     ap.add_argument("--workers", type=int, default=32,
                     help="processes; conservative default for a 128-core node")
     ap.add_argument("--native-threads", type=int, default=1)
@@ -94,6 +110,8 @@ def main() -> int:
         ap.error("--workers and --native-threads must be positive")
     if args.workers * args.native_threads > 128:
         ap.error("workers * native-threads must not exceed 128")
+    if (args.input_file is None) != (args.snr_file is None):
+        ap.error("--input-file and --snr-file must be supplied together")
 
     # Set limits in the parent before spawn/imports as well as in each child.
     _limit_native_threads(args.native_threads)
@@ -109,7 +127,8 @@ def main() -> int:
 
     ctx = get_context("spawn")
     with ctx.Pool(args.workers, initializer=_init_worker,
-                  initargs=(args.pipeline_module, args.native_threads, str(output))) as pool:
+                  initargs=(args.pipeline_module, args.native_threads, str(output),
+                            args.input_file, args.snr_file)) as pool:
         for index, status in pool.imap_unordered(_one, todo, chunksize=1):
             print(f"{index}: {status}", flush=True)
     return 0

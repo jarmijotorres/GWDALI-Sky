@@ -66,8 +66,10 @@ python -m skysim_gw check-localisation
 python -m skysim_gw doublet-serial
 python -m skysim_gw doublet-parallel \
   --pipeline-module skysim_gw.doublet_adapter \
-  --output-dir /pscratch/.../GWInputCatalogs \
-  --indices /pscratch/.../detected_indices.txt \
+  --input-file /path/to/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz \
+  --snr-file /path/to/SNR/skysim5000_BBH_lvk_snr_fh0_r0000_z0.0000_1.0000.npz \
+  --indices /path/to/detected_indices_fh0_r0000.txt \
+  --output-dir /path/to/doublet/fh0/r0000 \
   --workers 32 --native-threads 1
 python -m skysim_gw doublet-maps \
   --samples-dir /pscratch/.../GWInputCatalogs \
