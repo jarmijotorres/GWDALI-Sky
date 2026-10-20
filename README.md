@@ -43,7 +43,7 @@ using the configured bimodal mass distribution. It assigns an independent,
 deterministic random stream to each model/realization pair:
 
 ```bash
-python tmp/prepare_bbh_realizations.py \
+python scripts/prepare_bbh_realizations.py \
   --input-dir /path/to/GWseeds/Seeds \
   --output-root /path/to/GWseeds/Populations \
   --zi 0.0 --zf 1.0 --seed 12345
