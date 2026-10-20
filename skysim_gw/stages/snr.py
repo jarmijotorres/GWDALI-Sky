@@ -1,4 +1,4 @@
-"""Step 7: compute serial LVK SNRs for a prepared GW source catalogue.
+"""Step 7: compute checkpointed LVK SNRs for a prepared GW source catalogue.
 
 The calculation is checkpointed into a compressed NPZ file. Re-running the
 same command resumes unfinished rows. Each result row maps to the original
@@ -6,12 +6,12 @@ injection catalogue through ``source_index``.
 """
 
 import argparse
+from multiprocessing import get_context
 from pathlib import Path
 import os
 import tempfile
 import time
 
-import GWDALI as gw
 import numpy as np
 
 from skysim_gw.catalogue import (
@@ -66,11 +66,18 @@ RESULT_DTYPE = np.dtype([
 ])
 
 
+_WORKER_DETECTORS = None
+_WORKER_APPROXIMANT = None
+_WORKER_FMIN_HZ = None
+_WORKER_FMAX_HZ = None
+_WORKER_FSIZE = None
+
+
 from skysim_gw.products import snr_output_path as output_path
 
 
 def parse_arguments(argv=None):
-    """Parse optional explicit paths for tagged realization catalogues."""
+    """Parse optional paths and process settings for SNR catalogues."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--input-file", type=Path,
@@ -80,10 +87,93 @@ def parse_arguments(argv=None):
         "--output-file", type=Path,
         help="Checkpointed SNR NPZ output; overrides settings OUTPUT_DIR.",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Independent source processes (default: 1, serial).",
+    )
+    parser.add_argument(
+        "--native-threads", type=int, default=1,
+        help="Native numerical threads allowed in each worker (default: 1).",
+    )
     arguments = parser.parse_args(argv)
     if (arguments.input_file is None) != (arguments.output_file is None):
         parser.error("--input-file and --output-file must be supplied together")
+    if arguments.workers < 1 or arguments.native_threads < 1:
+        parser.error("--workers and --native-threads must be positive")
     return arguments
+
+
+def _limit_native_threads(number_of_threads):
+    """Avoid oversubscribing a multi-process SNR job with BLAS/JAX threads."""
+    for name in (
+        "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ[name] = str(number_of_threads)
+    os.environ.setdefault("XLA_FLAGS", "--xla_cpu_multi_thread_eigen=false")
+
+
+def _initialise_worker(
+    include_kagra, approximant, fmin_hz, fmax_hz, fsize, native_threads,
+):
+    """Build process-local detector objects for independent source jobs."""
+    global _WORKER_DETECTORS, _WORKER_APPROXIMANT
+    global _WORKER_FMIN_HZ, _WORKER_FMAX_HZ, _WORKER_FSIZE
+    _limit_native_threads(native_threads)
+    _WORKER_DETECTORS = get_lvk_detectors(include_kagra=include_kagra)
+    _WORKER_APPROXIMANT = approximant
+    _WORKER_FMIN_HZ = fmin_hz
+    _WORKER_FMAX_HZ = fmax_hz
+    _WORKER_FSIZE = fsize
+
+
+def _compute_snr(source, detectors, approximant, fmin_hz, fmax_hz, fsize):
+    # Import after worker thread limits are configured. In serial mode this is
+    # simply the first numerical operation.
+    import GWDALI as gw
+
+    raw_result = gw.get_SNR(
+        detectors,
+        source,
+        approximant,
+        enable_jax_waveforms=False,
+        fmin=fmin_hz,
+        fmax=fmax_hz,
+        fsize=fsize,
+    )
+    return parse_snr_result(raw_result, len(detectors))
+
+
+def _compute_snr_worker(task):
+    """Return one tabular SNR result; parent owns table/checkpoint writes."""
+    index, source = task
+    return _compute_snr_task(
+        index,
+        source,
+        _WORKER_DETECTORS,
+        _WORKER_APPROXIMANT,
+        _WORKER_FMIN_HZ,
+        _WORKER_FMAX_HZ,
+        _WORKER_FSIZE,
+    )
+
+
+def _compute_snr_task(
+    index, source, detectors, approximant, fmin_hz, fmax_hz, fsize,
+):
+    """Return a successful or failed SNR row payload for one source."""
+    try:
+        detector_snrs, network_snr = _compute_snr(
+            source,
+            detectors,
+            approximant,
+            fmin_hz,
+            fmax_hz,
+            fsize,
+        )
+        return index, detector_snrs, network_snr, ""
+    except Exception as error:
+        return index, None, np.nan, f"{type(error).__name__}: {error}"[:512]
 
 
 def empty_results(number_of_sources):
@@ -232,67 +322,102 @@ def main(argv=None):
     print(f"Pending sources: {len(pending):,}")
     print(f"Approximant: {approximant}")
     print(f"Detectors: {detector_labels}")
+    print(
+        f"Workers: {arguments.workers} "
+        f"(native threads/worker: {arguments.native_threads})"
+    )
 
     run_start = time.perf_counter()
     since_checkpoint = 0
-    for count, index in enumerate(pending, start=1):
-        try:
-            GwPrms = get_gwdali_source(catalogue, index)
-            raw_result = gw.get_SNR(
+    pool = None
+    if arguments.workers == 1:
+        outcomes = (
+            _compute_snr_task(
+                index,
+                get_gwdali_source(catalogue, index),
                 detectors,
-                GwPrms,
                 approximant,
-                enable_jax_waveforms=False,
-                fmin=FMIN_HZ,
-                fmax=FMAX_HZ,
-                fsize=FSIZE,
+                FMIN_HZ,
+                FMAX_HZ,
+                FSIZE,
             )
-            detector_snrs, network_snr = parse_snr_result(
-                raw_result, len(detectors)
-            )
+            for index in pending
+        )
+    else:
+        _limit_native_threads(arguments.native_threads)
+        context = get_context("spawn")
+        pool = context.Pool(
+            arguments.workers,
+            initializer=_initialise_worker,
+            initargs=(
+                INCLUDE_KAGRA,
+                approximant,
+                FMIN_HZ,
+                FMAX_HZ,
+                FSIZE,
+                arguments.native_threads,
+            ),
+        )
+        tasks = (
+            (index, get_gwdali_source(catalogue, index))
+            for index in pending
+        )
+        outcomes = pool.imap_unordered(_compute_snr_worker, tasks, chunksize=1)
 
-            results["snr_hanford"][index] = detector_snrs[0]
-            results["snr_livingston"][index] = detector_snrs[1]
-            results["snr_virgo"][index] = detector_snrs[2]
-            if INCLUDE_KAGRA:
-                results["snr_kagra"][index] = detector_snrs[3]
+    try:
+        for count, (index, detector_snrs, network_snr, error_message) in enumerate(
+            outcomes, start=1
+        ):
+            if error_message:
+                results["success"][index] = False
+                results["detected"][index] = False
+                results["error_message"][index] = error_message
+            else:
+                results["snr_hanford"][index] = detector_snrs[0]
+                results["snr_livingston"][index] = detector_snrs[1]
+                results["snr_virgo"][index] = detector_snrs[2]
+                if INCLUDE_KAGRA:
+                    results["snr_kagra"][index] = detector_snrs[3]
 
-            number_above = int(np.count_nonzero(
-                detector_snrs >= SINGLE_DETECTOR_SNR_THRESHOLD
-            ))
-            results["snr_network"][index] = network_snr
-            results["n_detectors_above_threshold"][index] = number_above
-            results["detected"][index] = (
-                network_snr >= NETWORK_SNR_THRESHOLD
-                and number_above >= MIN_DETECTORS_ABOVE_THRESHOLD
-            )
-            results["success"][index] = True
-            results["error_message"][index] = ""
-        except Exception as error:
-            results["success"][index] = False
-            results["detected"][index] = False
-            results["error_message"][index] = (
-                f"{type(error).__name__}: {error}"[:512]
-            )
+                number_above = int(np.count_nonzero(
+                    detector_snrs >= SINGLE_DETECTOR_SNR_THRESHOLD
+                ))
+                results["snr_network"][index] = network_snr
+                results["n_detectors_above_threshold"][index] = number_above
+                results["detected"][index] = (
+                    network_snr >= NETWORK_SNR_THRESHOLD
+                    and number_above >= MIN_DETECTORS_ABOVE_THRESHOLD
+                )
+                results["success"][index] = True
+                results["error_message"][index] = ""
 
-        completed[index] = True
-        since_checkpoint += 1
+            completed[index] = True
+            since_checkpoint += 1
 
-        if count % PRINT_EVERY == 0 or count == len(pending):
-            elapsed = time.perf_counter() - run_start
-            rate = count / elapsed if elapsed > 0 else np.nan
-            successes = int(results["success"][start:stop].sum())
-            detections = int(results["detected"][start:stop].sum())
-            print(
-                f"processed={count:,}/{len(pending):,} index={index:,} "
-                f"success={successes:,} detected={detections:,} "
-                f"rate={rate:.3f} source/s elapsed={elapsed/60:.2f} min",
-                flush=True,
-            )
+            if count % PRINT_EVERY == 0 or count == len(pending):
+                elapsed = time.perf_counter() - run_start
+                rate = count / elapsed if elapsed > 0 else np.nan
+                successes = int(results["success"][start:stop].sum())
+                detections = int(results["detected"][start:stop].sum())
+                print(
+                    f"processed={count:,}/{len(pending):,} index={index:,} "
+                    f"success={successes:,} detected={detections:,} "
+                    f"rate={rate:.3f} source/s elapsed={elapsed/60:.2f} min",
+                    flush=True,
+                )
 
-        if since_checkpoint >= CHECKPOINT_EVERY:
-            save_checkpoint(save_path, results, completed, metadata)
-            since_checkpoint = 0
+            if since_checkpoint >= CHECKPOINT_EVERY:
+                save_checkpoint(save_path, results, completed, metadata)
+                since_checkpoint = 0
+    except BaseException:
+        if pool is not None:
+            pool.terminate()
+            pool.join()
+        raise
+    else:
+        if pool is not None:
+            pool.close()
+            pool.join()
 
     save_checkpoint(save_path, results, completed, metadata)
 

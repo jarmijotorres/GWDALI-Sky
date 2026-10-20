@@ -64,12 +64,15 @@ standard redshift-only filename:
 ```bash
 python -m skysim_gw snr -- \
   --input-file /path/to/GWseeds/Populations/fh0/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz \
-  --output-file /path/to/GWseeds/Populations/fh0/skysim5000_BBH_lvk_snr_fh0_r0000_z0.0000_1.0000.npz
+  --output-file /path/to/GWseeds/Populations/fh0/SNR/skysim5000_BBH_lvk_snr_fh0_r0000_z0.0000_1.0000.npz \
+  --workers 32 --native-threads 1
 ```
 
 The usual checkpoint/resume behavior still applies; a completed SNR output
 must match the input catalogue and detector-configuration metadata before it
-is reused. Detector/network settings are configured in `settings/snr.py`.
+is reused. With `--workers > 1`, source calculations run in separate
+processes but the parent writes the same single tabular SNR checkpoint.
+Detector/network settings are configured in `settings/snr.py`.
 
 ### NERSC SkySim5000 host catalogue
 
