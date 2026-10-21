@@ -16,6 +16,44 @@ Arrays within a population must have equal length. Additional host properties ar
 
 `rate-targets` and `assign-hosts` are optional upstream steps for rebuilding seeds. Only `skysim_gw/stages/assign_hosts.py` imports GCRCatalogs and mpi4py. It is **NERSC-only as configured**, where the original SkySim5000 catalogue lives, and requires `lsst` group access. Run seed building there and transfer the resulting HDF5 to the analysis machine. Rate calculation itself does not require GCR or NERSC.
 
+### S22 empirical BBH Seeds
+
+`model_name: "s22_bbh_empirical"` adds the metallicity-marginalized
+Santoliquido et al. (2022) BBH model to the existing Seed workflow. It returns
+the S22 \(R(z,\log M_\star)\) obtained by summing the empirical host grid over
+SFR. This is intentionally the shared projection with the existing Menote
+fh0/fh1 models, so `assign-hosts` still selects uniformly within its existing
+`(true-z, logMstar)` cells.
+
+The released S22 text catalogues must be readable on the system running
+`rate-targets`. A minimal BBH configuration addition is:
+
+```json
+"model_name": "s22_bbh_empirical",
+"bbh_model_parameters": {
+  "data_dir": "/path/to/MergerRateDensityModels",
+  "metallicity_relation": "M57",
+  "common_envelope": "A3",
+  "rate_scale": 1.0,
+  "mass_tilt": 0.0,
+  "sfr_tilt": 0.0
+}
+```
+
+`data_dir` is required. `M57`/`M54` and `A1`/`A3`/`A5` select the supplied
+S22 catalogue family. The direct S22 rate is used when `rate_scale=1`; choose
+and record an explicit scale if matching a Menote total for a shape-only
+comparison. The separate `S22BBHEmpiricalModel.rate_per_galaxy(z, Mstar, sfr)`
+API retains SFR and is the appropriate path for a future fully galaxy-weighted
+lightcone assignment. It is not used by the current 2-D Seed assignment.
+
+To prepare S22 Seed files after the NERSC host-assignment step, use the normal
+tagged-realization helper with `--models s22` (or include `s22` alongside
+`fh0 fh1`). It recognizes `gw_hosts_s22_r0000.hdf5` through
+`gw_hosts_s22_r0009.hdf5`, writes `Populations/s22/`, and assigns a distinct
+deterministic random stream to that model tag. The Doublet provenance tagger
+also recognizes `s22_rXXXX`.
+
 ## Configuration and moving to another computer
 
 Edit `skysim_gw/settings/common.py` for the shared NERSC base directory, BBH/BHNS/BNS selection, redshift bounds, waveform approximants, frequency range, and frequency-grid size. The `/pscratch/...` and `/global/...` paths are deliberately unchanged placeholders. Stage settings derive output directories from the shared base directory.

@@ -32,11 +32,20 @@ populations separate by model:
 GWseeds/
 ├── Seeds/
 │   ├── gw_hosts_fh0_r0000.hdf5 ... gw_hosts_fh0_r0009.hdf5
-│   └── gw_hosts_fh1_r0000.hdf5 ... gw_hosts_fh1_r0009.hdf5
+│   ├── gw_hosts_fh1_r0000.hdf5 ... gw_hosts_fh1_r0009.hdf5
+│   └── gw_hosts_s22_r0000.hdf5 ... gw_hosts_s22_r0009.hdf5
 └── Populations/
     ├── fh0/
-    └── fh1/
+    ├── fh1/
+    └── s22/
 ```
+
+`s22` is an additional Seed-model tag for the empirical Santoliquido et al.
+(2022) BBH model. It is constructed with `rate-targets` using the
+SFR-marginalized S22 \(R(z,\log M_\star)\), then uses the same 2-D
+`(true-z, logMstar)` host-assignment machinery as `fh0` and `fh1`. Give its
+Seed and population products their own `s22/` directories; never overwrite a
+Menote realization.
 
 The local batch helper prepares the 20 tagged host files as BBH catalogues,
 using the configured bimodal mass distribution. It assigns an independent,
@@ -48,6 +57,10 @@ python scripts/prepare_bbh_realizations.py \
   --output-root /path/to/GWseeds/Populations \
   --zi 0.0 --zf 1.0 --seed 12345
 ```
+
+After producing ten `gw_hosts_s22_rXXXX.hdf5` files with the S22 target
+configuration, include `--models fh0 fh1 s22` (or run `--models s22`) to
+prepare their independent `Populations/s22/` realization set.
 
 This produces files such as
 `Populations/fh0/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz`.

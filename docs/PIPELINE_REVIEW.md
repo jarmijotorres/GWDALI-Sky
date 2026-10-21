@@ -49,7 +49,7 @@ with a finer quadrature grid. The output HDF5 retains both `expected/<TYPE>`
 and `drawn/<TYPE>` arrays, as well as bin edges, the configuration JSON, rate
 parameters, cosmology, and random-seed provenance.
 
-### Current built-in model
+### Built-in models
 
 `rates.py` always calculates all three source classes:
 
@@ -60,12 +60,16 @@ parameters, cosmology, and random-seed provenance.
   `P_BBH`, `P_BHNS`, and `P_BNS`.
 - Cosmology is `FlatLambdaCDM(H0=71 km s^-1 Mpc^-1, Om0=0.265)`.
 
-The required config key `model_name` is currently **provenance only**: it is
-not read when choosing a rate function or parameter set. Likewise,
-`draw_mode` presently accepts only `independent_by_type`, meaning independent
+`s22_bbh_empirical` is also available for BBHs. It reads the S22 released
+catalogues, marginalizes their rate-weighted host grid over SFR, and supplies
+an empirical `R(z, logMstar)` to the same target grid. BHNS and BNS continue
+to use their Menote templates. The S22 catalogue directory and its M54/M57,
+A1/A3/A5 selection are explicit JSON model parameters and are retained in the
+target-file provenance.
+
+The required config key `model_name` selects the BBH rate function. `draw_mode`
+presently accepts only `independent_by_type`, meaning independent
 Poisson draws for BBH, BNS, and BHNS using one reproducible NumPy generator.
-Do not label a run as an alternate rate model unless the code has first been
-extended to select it.
 
 ### Decisions to record before a production run
 
@@ -176,7 +180,12 @@ while retaining the existing Menote BNS and BHNS density models.  The available
 BBH choices are `menote_bbh`, `menote_heaviside_scaled_bbh`,
 `menote_heaviside_scaled_matched_total_bbh`,
 `flat_bbh_fixed_z`, `gaussian_bbh_fixed_z`, `bimodal_bbh_fixed_z`, and
-`bimodal_bbh_low10_fixed_z`.
+`bimodal_bbh_low10_fixed_z`, and `s22_bbh_empirical`.
+
+`s22_bbh_empirical` requires `bbh_model_parameters.data_dir`, pointing at the
+S22 BBH text catalogues. It uses the SFR-marginalized rate for the existing
+two-dimensional Seed workflow; optional `rate_scale`, `mass_tilt`, and
+`sfr_tilt` parameters modify its normalization and empirical host shape.
 
 The flat curve is normalized to the integral of the Menote BBH density at
 `z=1` over `7 <= log10(Mstar/Msun) <= 12.5`. The Gaussian and bimodal curves

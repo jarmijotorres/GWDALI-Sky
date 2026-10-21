@@ -17,7 +17,7 @@ _realization_tag = None
 def realization_tag(path) -> str:
     """Extract the optional fh-model/realization tag from a population name."""
     path = Path(path)
-    match = re.search(r"_gwdali_(fh[01]_r\d{4})_z", path.stem)
+    match = re.search(r"_gwdali_((?:fh[01]|s22)_r\d{4})_z", path.stem)
     return match.group(1) if match is not None else path.stem
 
 def _load():

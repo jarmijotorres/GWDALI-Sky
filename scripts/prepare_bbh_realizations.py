@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Prepare BBH injection catalogues for every fh0/fh1 GWseeds realization.
+"""Prepare BBH injection catalogues for tagged GWseeds realizations.
 
 Each realization receives an independent, deterministic population RNG stream.
-Outputs are grouped by model (``OUTPUT_ROOT/fh0`` and ``OUTPUT_ROOT/fh1``),
+Outputs are grouped by model (``OUTPUT_ROOT/fh0``, ``fh1``, or ``s22``),
 with the realization tag embedded in the NPZ filename to prevent overwrites.
 """
 
@@ -33,12 +33,19 @@ def parse_args():
     parser.add_argument("--zi", type=float, default=0.0)
     parser.add_argument("--zf", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=12345)
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=("fh0", "fh1", "s22"),
+        default=("fh0", "fh1"),
+        help="Model tags to prepare (default: fh0 fh1)",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
 
 def realization_info(path: Path):
-    match = re.fullmatch(r"gw_hosts_(fh[01])_r(\d{4})\.hdf5", path.name)
+    match = re.fullmatch(r"gw_hosts_(fh[01]|s22)_r(\d{4})\.hdf5", path.name)
     if match is None:
         raise ValueError(f"Unexpected realization filename: {path.name}")
     return match.group(1), int(match.group(2))
@@ -67,8 +74,13 @@ def write_catalogue(path: Path, population, zi: float, zf: float, seed: int):
 
 def main():
     args = parse_args()
-    files = sorted(args.input_dir.glob("gw_hosts_fh[01]_r????.hdf5"))
-    expected = {f"fh{f_h}_r{run:04d}" for f_h in (0, 1) for run in range(10)}
+    files = sorted(
+        path for path in args.input_dir.glob("gw_hosts_*_r????.hdf5")
+        if realization_info(path)[0] in args.models
+    )
+    expected = {
+        f"{model}_r{run:04d}" for model in args.models for run in range(10)
+    }
     found = {path.stem.removeprefix("gw_hosts_") for path in files}
     if found != expected:
         missing = sorted(expected - found)
@@ -79,7 +91,7 @@ def main():
         model_tag, realization = realization_info(source_path)
         # Separating model and realization identifiers gives every catalogue an
         # independent but reproducible binary-population draw.
-        model_index = int(model_tag[-1])
+        model_index = {"fh0": 0, "fh1": 1, "s22": 2}[model_tag]
         seed_sequence = np.random.SeedSequence([args.seed, model_index, realization])
         rng = np.random.default_rng(seed_sequence)
         stored_seed = int(seed_sequence.generate_state(1, dtype=np.uint64)[0])

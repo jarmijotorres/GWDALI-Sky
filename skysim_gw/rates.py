@@ -10,11 +10,13 @@ time, and the source-to-observer time-dilation factor 1/(1+z).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from functools import partial
+from functools import lru_cache, partial
 
 import numpy as np
 from astropy import units as u
 from astropy.cosmology import FlatLambdaCDM
+
+from skysim_gw.s22 import S22BBHEmpiricalModel, S22BBHParameters
 
 
 # Menote et al. (2025), Table 1 parameters supplied by the analysis.
@@ -568,6 +570,58 @@ def rate_bbh_bimodal_low10_fixed_z(
     )
 
 
+@lru_cache(maxsize=8)
+def _s22_model(data_dir: str, metallicity_relation: str, common_envelope: str):
+    """Cache the data-backed S22 template while target grids are evaluated."""
+    return S22BBHEmpiricalModel(
+        data_dir,
+        metallicity_relation=metallicity_relation,
+        common_envelope=common_envelope,
+    )
+
+
+def rate_bbh_s22_empirical(
+    z,
+    log_mass,
+    data_dir,
+    metallicity_relation="M57",
+    common_envelope="A3",
+    rate_scale=1.0,
+    mass_tilt=0.0,
+    sfr_tilt=0.0,
+):
+    """S22 BBH density R(z, logMstar), marginalized over SFR.
+
+    ``data_dir`` holds the released ``HG_*_BBHs_*`` catalogues.  The result is
+    a source-frame density in Gpc^-3 yr^-1 dex^-1 and can therefore feed the
+    existing two-dimensional target/Seed workflow.  It is not a replacement
+    for :meth:`S22BBHEmpiricalModel.rate_per_galaxy`, which retains SFR when
+    weighting individual lightcone galaxies.
+    """
+    model = _s22_model(
+        str(data_dir), str(metallicity_relation), str(common_envelope)
+    )
+    parameters = S22BBHParameters(
+        rate_scale=float(rate_scale), mass_tilt=float(mass_tilt),
+        sfr_tilt=float(sfr_tilt),
+    )
+    parameters.validate()
+    z_array, mass_array = np.broadcast_arrays(
+        np.asarray(z, dtype=float), np.asarray(log_mass, dtype=float)
+    )
+    result = np.zeros(z_array.shape, dtype=float)
+    mass_centers = 0.5 * (model.mass_edges[:-1] + model.mass_edges[1:])
+    for redshift in np.unique(z_array):
+        select = z_array == redshift
+        rate_per_mass_bin = model.host_rate_grid(float(redshift), parameters).sum(axis=1)
+        density = rate_per_mass_bin / np.diff(model.mass_edges)
+        result[select] = np.interp(
+            mass_array[select], mass_centers, density, left=0.0, right=0.0
+        )
+    result = np.where(np.isfinite(result), np.maximum(result, 0.0), 0.0)
+    return _return_scalar_if_scalar(result, z, log_mass)
+
+
 BBH_RATE_MODELS = {
     "menote_bbh": rate_bbh,
     "menote_heaviside_scaled_bbh": rate_bbh_menote_heaviside_scaled,
@@ -578,6 +632,7 @@ BBH_RATE_MODELS = {
     "gaussian_bbh_fixed_z": rate_bbh_gaussian_fixed_z,
     "bimodal_bbh_fixed_z": rate_bbh_bimodal_fixed_z,
     "bimodal_bbh_low10_fixed_z": rate_bbh_bimodal_low10_fixed_z,
+    "s22_bbh_empirical": rate_bbh_s22_empirical,
 }
 
 
@@ -603,12 +658,22 @@ def rate_functions_for_model(model_name, model_parameters=None):
             "high_peak_amplitude",
             "high_sigma_dex",
         },
+        "s22_bbh_empirical": {
+            "data_dir",
+            "metallicity_relation",
+            "common_envelope",
+            "rate_scale",
+            "mass_tilt",
+            "sfr_tilt",
+        },
     }
     unknown = set(parameters) - permitted.get(model_name, set())
     if unknown:
         raise ValueError(
             f"Unsupported parameters for {model_name}: {sorted(unknown)}"
         )
+    if model_name == "s22_bbh_empirical" and "data_dir" not in parameters:
+        raise ValueError("s22_bbh_empirical requires bbh_model_parameters.data_dir")
     functions = RATE_FUNCTIONS.copy()
     functions["BBH"] = partial(BBH_RATE_MODELS[model_name], **parameters)
     return functions
@@ -624,6 +689,7 @@ def bbh_model_metadata(model_name, model_parameters=None):
         "normalization": (
             "menote_integral_matched_per_redshift"
             if model_name == "menote_heaviside_scaled_matched_total_bbh"
+            else "direct_s22_template" if model_name == "s22_bbh_empirical"
             else "menote_integral_matched" if model_name == "flat_bbh_fixed_z"
             else "direct_amplitudes"
         ),
@@ -843,6 +909,7 @@ __all__ = [
     "rate_bbh_gaussian_fixed_z",
     "rate_bbh_menote_heaviside_scaled",
     "rate_bbh_menote_heaviside_scaled_matched_total",
+    "rate_bbh_s22_empirical",
     "rate_bbh_menote_a20a1d_capped",
     "rate_bbh_menote_a20a1d_capped_matched_total",
     "rate_bhns",
