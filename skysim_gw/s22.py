@@ -1,12 +1,14 @@
 """Empirical Santoliquido et al. (2022) BBH host-rate templates.
 
 The S22 catalogues are reduced to a continuous, rate-weighted function of
-merger redshift, stellar mass, and SFR. Metallicity is marginalized out.
+merger redshift, stellar mass, SFR, and raw S22 logZ. The historical APIs
+marginalize over logZ; metallicity-resolved APIs retain it explicitly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import numpy as np
@@ -42,39 +44,112 @@ def _centers(edges):
 
 
 class S22BBHEmpiricalModel:
-    """Continuous, metallicity-marginalized S22 BBH host-rate model.
+    """Continuous S22 BBH host-rate model from raw files or one compact NPZ.
 
-    ``rate_per_galaxy`` weights galaxies in a lightcone. M57/M54 selects the
-    S22 catalogue calibration but does not require a metallicity per galaxy.
+    ``rate_per_galaxy`` weights galaxies in a lightcone and marginalizes raw
+    S22 logZ unless it is supplied explicitly. M57/M54 selects the S22
+    catalogue calibration.
     """
 
     def __init__(
-        self, data_dir: str | Path, metallicity_relation="M57", common_envelope="A3",
-        snapshots=None, mass_edges=None, sfr_edges=None,
+        self, data_dir: str | Path | None = None, metallicity_relation="M57",
+        common_envelope="A3", snapshots=None, mass_edges=None, sfr_edges=None,
+        log_metallicity_edges=None, histogram_file: str | Path | None = None,
     ):
         if metallicity_relation not in {"M54", "M57"}:
             raise ValueError("metallicity_relation must be M54 or M57")
         if common_envelope not in {"A1", "A3", "A5"}:
             raise ValueError("common_envelope must be A1, A3, or A5")
-        self.data_dir = Path(data_dir)
+        if (data_dir is None) == (histogram_file is None):
+            raise ValueError("Specify exactly one of data_dir or histogram_file")
+        self.data_dir = None if data_dir is None else Path(data_dir)
+        self.histogram_file = (
+            None if histogram_file is None else Path(histogram_file)
+        )
         self.metallicity_relation = metallicity_relation
         self.common_envelope = common_envelope
-        source_snapshots = S22_LOW_REDSHIFT_SNAPSHOTS if snapshots is None else snapshots
-        ordered = sorted(source_snapshots.items(), key=lambda item: item[1])
-        self.snapshot_numbers = np.asarray([item[0] for item in ordered], dtype=int)
-        self.redshifts = np.asarray([item[1] for item in ordered], dtype=float)
+        if self.histogram_file is not None:
+            if any(value is not None for value in (
+                snapshots, mass_edges, sfr_edges, log_metallicity_edges
+            )):
+                raise ValueError(
+                    "Histogram files define snapshots and bin edges; do not "
+                    "also pass snapshots or edges"
+                )
+            histogram = self._load_histogram()
+            self.snapshot_numbers = histogram["snapshot_numbers"]
+            self.redshifts = histogram["redshifts"]
+            self.mass_edges = histogram["mass_edges"]
+            self.sfr_edges = histogram["sfr_edges"]
+            self.log_metallicity_edges = histogram["log_metallicity_edges"]
+            self._rate_sum_3d = histogram["rate_sum"]
+            self._occupancy_3d = histogram["occupancy"]
+        else:
+            source_snapshots = S22_LOW_REDSHIFT_SNAPSHOTS if snapshots is None else snapshots
+            ordered = sorted(source_snapshots.items(), key=lambda item: item[1])
+            self.snapshot_numbers = np.asarray([item[0] for item in ordered], dtype=int)
+            self.redshifts = np.asarray([item[1] for item in ordered], dtype=float)
+            self.mass_edges = np.asarray(np.arange(7.0, 12.05, 0.1) if mass_edges is None else mass_edges, dtype=float)
+            self.sfr_edges = np.asarray(np.arange(-4.0, 2.55, 0.1) if sfr_edges is None else sfr_edges, dtype=float)
+            self.log_metallicity_edges = np.asarray(
+                np.arange(-5.0, 0.05, 0.1)
+                if log_metallicity_edges is None else log_metallicity_edges,
+                dtype=float,
+            )
+            self._rate_sum_3d, self._occupancy_3d = self._load_templates()
         if self.redshifts.size < 2 or np.any(np.diff(self.redshifts) <= 0):
             raise ValueError("snapshots must contain at least two increasing redshifts")
-        self.mass_edges = np.asarray(np.arange(7.0, 12.05, 0.1) if mass_edges is None else mass_edges, dtype=float)
-        self.sfr_edges = np.asarray(np.arange(-4.0, 2.55, 0.1) if sfr_edges is None else sfr_edges, dtype=float)
-        for name, edges in (("mass_edges", self.mass_edges), ("sfr_edges", self.sfr_edges)):
+        for name, edges in (
+            ("mass_edges", self.mass_edges),
+            ("sfr_edges", self.sfr_edges),
+            ("log_metallicity_edges", self.log_metallicity_edges),
+        ):
             if edges.ndim != 1 or edges.size < 3 or np.any(np.diff(edges) <= 0):
                 raise ValueError(f"{name} must have at least two increasing bins")
-        self._rate_sum, self._occupancy = self._load_templates()
+        expected_shape = (
+            self.redshifts.size, self.mass_edges.size - 1,
+            self.sfr_edges.size - 1, self.log_metallicity_edges.size - 1,
+        )
+        if self._rate_sum_3d.shape != expected_shape or self._occupancy_3d.shape != expected_shape:
+            raise ValueError(
+                f"S22 histogram arrays must have shape {expected_shape}"
+            )
+        self._rate_sum = self._rate_sum_3d.sum(axis=-1)
+        self._occupancy = self._occupancy_3d.sum(axis=-1)
         self._mean_rate = np.divide(
             self._rate_sum, self._occupancy, out=np.full_like(self._rate_sum, np.nan),
             where=self._occupancy > 0,
         )
+        self._mean_rate_3d = np.divide(
+            self._rate_sum_3d, self._occupancy_3d,
+            out=np.full_like(self._rate_sum_3d, np.nan),
+            where=self._occupancy_3d > 0,
+        )
+
+    def _load_histogram(self):
+        if not self.histogram_file.is_file():
+            raise FileNotFoundError(
+                f"Missing S22 histogram: {self.histogram_file}"
+            )
+        required = {
+            "snapshot_numbers", "redshifts", "mass_edges", "sfr_edges",
+            "log_metallicity_edges", "rate_sum", "occupancy", "metadata_json",
+        }
+        with np.load(self.histogram_file, allow_pickle=False) as data:
+            missing = sorted(required - set(data.files))
+            if missing:
+                raise ValueError(f"S22 histogram is missing arrays: {missing}")
+            metadata = json.loads(data["metadata_json"].tobytes().decode("utf-8"))
+            if metadata.get("format") != "s22_bbh_histogram_v1":
+                raise ValueError("Unsupported S22 histogram format")
+            if metadata.get("metallicity_relation") != self.metallicity_relation:
+                raise ValueError("S22 histogram metallicity relation mismatch")
+            if metadata.get("common_envelope") != self.common_envelope:
+                raise ValueError("S22 histogram common-envelope model mismatch")
+            return {
+                name: np.asarray(data[name]).copy()
+                for name in required if name != "metadata_json"
+            }
 
     def _path(self, snapshot):
         return self.data_dir / (
@@ -83,7 +158,10 @@ class S22BBHEmpiricalModel:
         )
 
     def _load_templates(self):
-        shape = (self.snapshot_numbers.size, self.mass_edges.size - 1, self.sfr_edges.size - 1)
+        shape = (
+            self.snapshot_numbers.size, self.mass_edges.size - 1,
+            self.sfr_edges.size - 1, self.log_metallicity_edges.size - 1,
+        )
         rate_sum, occupancy = np.zeros(shape), np.zeros(shape)
         for index, snapshot in enumerate(self.snapshot_numbers):
             path = self._path(int(snapshot))
@@ -92,11 +170,19 @@ class S22BBHEmpiricalModel:
             values = np.loadtxt(path)
             if values.ndim != 2 or values.shape[1] < 4:
                 raise ValueError(f"Invalid S22 BBH catalogue: {path}")
-            mass, sfr, rate = values[:, 0], values[:, 1], values[:, 3]
-            valid = np.isfinite(mass) & (mass > 0) & np.isfinite(sfr) & (sfr > 0) & np.isfinite(rate) & (rate >= 0)
-            points = np.column_stack((np.log10(mass[valid]), np.log10(sfr[valid])))
-            rate_sum[index] = np.histogramdd(points, bins=(self.mass_edges, self.sfr_edges), weights=rate[valid])[0]
-            occupancy[index] = np.histogramdd(points, bins=(self.mass_edges, self.sfr_edges))[0]
+            mass, sfr, log_metallicity, rate = (
+                values[:, 0], values[:, 1], values[:, 2], values[:, 3]
+            )
+            valid = np.isfinite(mass) & (mass > 0) & np.isfinite(sfr) & (sfr > 0) & np.isfinite(log_metallicity) & np.isfinite(rate) & (rate >= 0)
+            points = np.column_stack((
+                np.log10(mass[valid]), np.log10(sfr[valid]),
+                log_metallicity[valid],
+            ))
+            bins = (
+                self.mass_edges, self.sfr_edges, self.log_metallicity_edges,
+            )
+            rate_sum[index] = np.histogramdd(points, bins=bins, weights=rate[valid])[0]
+            occupancy[index] = np.histogramdd(points, bins=bins)[0]
         return rate_sum, occupancy
 
     def _bracket(self, redshift):
@@ -130,6 +216,49 @@ class S22BBHEmpiricalModel:
                 denominator[usable] += weight[usable]
         return np.divide(numerator, denominator, out=result, where=denominator > 0)
 
+    @staticmethod
+    def _trilinear(grid, x, y, z, x_edges, y_edges, z_edges):
+        x, y, z = np.broadcast_arrays(
+            np.asarray(x, dtype=float), np.asarray(y, dtype=float),
+            np.asarray(z, dtype=float),
+        )
+        result = np.zeros(x.shape)
+        centers = tuple(_centers(edges) for edges in (x_edges, y_edges, z_edges))
+        valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        for coordinate, center in zip((x, y, z), centers):
+            valid &= (coordinate >= center[0]) & (coordinate <= center[-1])
+        if not np.any(valid):
+            return result
+        lower, fractions = [], []
+        for coordinate, center in zip((x, y, z), centers):
+            upper = np.clip(
+                np.searchsorted(center, coordinate, side="right"),
+                1, len(center) - 1,
+            )
+            low = upper - 1
+            lower.append(low)
+            fractions.append(
+                (coordinate - center[low]) / (center[upper] - center[low])
+            )
+        numerator, denominator = np.zeros(x.shape), np.zeros(x.shape)
+        for dx in (0, 1):
+            for dy in (0, 1):
+                for dz in (0, 1):
+                    weight = (
+                        (fractions[0] if dx else 1 - fractions[0])
+                        * (fractions[1] if dy else 1 - fractions[1])
+                        * (fractions[2] if dz else 1 - fractions[2])
+                    )
+                    corner = grid[
+                        lower[0] + dx, lower[1] + dy, lower[2] + dz
+                    ]
+                    usable = valid & np.isfinite(corner)
+                    numerator[usable] += weight[usable] * corner[usable]
+                    denominator[usable] += weight[usable]
+        return np.divide(
+            numerator, denominator, out=result, where=denominator > 0
+        )
+
     def _tilt_grid(self, grid, parameters):
         mass, sfr = np.meshgrid(_centers(self.mass_edges), _centers(self.sfr_edges), indexing="ij")
         return grid * parameters.rate_scale * 10.0 ** (parameters.mass_tilt * (mass - 10) + parameters.sfr_tilt * sfr)
@@ -141,11 +270,41 @@ class S22BBHEmpiricalModel:
         low, high, fraction = self._bracket(float(redshift))
         return self._tilt_grid(((1 - fraction) * self._rate_sum[low] + fraction * self._rate_sum[high]) / S22_VOLUME_CMPC3, parameters)
 
-    def rate_per_galaxy(self, redshift, stellar_mass, sfr, parameters: S22BBHParameters | None = None):
-        """Interpolated BBH rate per galaxy in Gyr^-1."""
+    def host_rate_grid_3d(self, redshift: float, parameters: S22BBHParameters | None = None):
+        """Rate grid in Gpc^-3 yr^-1 per (Mstar,SFR,raw-logZ) bin."""
         parameters = S22BBHParameters() if parameters is None else parameters
         parameters.validate()
-        redshift, stellar_mass, sfr = np.broadcast_arrays(np.asarray(redshift, dtype=float), np.asarray(stellar_mass, dtype=float), np.asarray(sfr, dtype=float))
+        low, high, fraction = self._bracket(float(redshift))
+        grid = (
+            (1 - fraction) * self._rate_sum_3d[low]
+            + fraction * self._rate_sum_3d[high]
+        ) / S22_VOLUME_CMPC3
+        tilt = self._tilt_grid(np.ones(grid.shape[:2]), parameters)
+        return grid * tilt[:, :, None]
+
+    def rate_per_galaxy(
+        self, redshift, stellar_mass, sfr,
+        parameters: S22BBHParameters | None = None, log_metallicity=None,
+    ):
+        """Interpolated BBH rate per galaxy in Gyr^-1.
+
+        With ``log_metallicity=None``, the rate is marginalized over the raw
+        S22 ``logZ`` coordinate, preserving the historical API. Supplying
+        ``log_metallicity`` evaluates the full Mstar/SFR/logZ histogram. The
+        input must use the raw S22 logZ convention, not FMR 12+log10(O/H).
+        """
+        parameters = S22BBHParameters() if parameters is None else parameters
+        parameters.validate()
+        arrays = [
+            np.asarray(redshift, dtype=float),
+            np.asarray(stellar_mass, dtype=float),
+            np.asarray(sfr, dtype=float),
+        ]
+        if log_metallicity is not None:
+            arrays.append(np.asarray(log_metallicity, dtype=float))
+        arrays = np.broadcast_arrays(*arrays)
+        redshift, stellar_mass, sfr = arrays[:3]
+        log_metallicity = None if log_metallicity is None else arrays[3]
         log_mass, log_sfr = np.full(redshift.shape, np.nan), np.full(redshift.shape, np.nan)
         np.log10(stellar_mass, out=log_mass, where=stellar_mass > 0)
         np.log10(sfr, out=log_sfr, where=sfr > 0)
@@ -153,13 +312,51 @@ class S22BBHEmpiricalModel:
         result = np.zeros(redshift.shape)
         for low in np.unique(lower):
             choose = lower == low
-            first = self._bilinear(self._mean_rate[low], log_mass[choose], log_sfr[choose], self.mass_edges, self.sfr_edges)
-            second = self._bilinear(self._mean_rate[low + 1], log_mass[choose], log_sfr[choose], self.mass_edges, self.sfr_edges)
+            if log_metallicity is None:
+                first = self._bilinear(self._mean_rate[low], log_mass[choose], log_sfr[choose], self.mass_edges, self.sfr_edges)
+                second = self._bilinear(self._mean_rate[low + 1], log_mass[choose], log_sfr[choose], self.mass_edges, self.sfr_edges)
+            else:
+                first = self._trilinear(
+                    self._mean_rate_3d[low], log_mass[choose],
+                    log_sfr[choose], log_metallicity[choose], self.mass_edges,
+                    self.sfr_edges, self.log_metallicity_edges,
+                )
+                second = self._trilinear(
+                    self._mean_rate_3d[low + 1], log_mass[choose],
+                    log_sfr[choose], log_metallicity[choose], self.mass_edges,
+                    self.sfr_edges, self.log_metallicity_edges,
+                )
             result[choose] = (1 - fraction[choose]) * first + fraction[choose] * second
         tilt = parameters.mass_tilt * (log_mass - 10) + parameters.sfr_tilt * log_sfr
         result *= parameters.rate_scale * np.where(np.isfinite(tilt), 10.0 ** tilt, 0)
         result[~np.isfinite(result)] = 0
         return float(result) if result.ndim == 0 else result
+
+    def sample_hosts_3d(
+        self, redshift: float, size: int, rng=None,
+        parameters: S22BBHParameters | None = None,
+    ):
+        """Sample rate-weighted Mstar, SFR, and raw S22 logZ at one redshift."""
+        if np.ndim(redshift) != 0 or size < 0:
+            raise ValueError("redshift must be scalar and size non-negative")
+        grid = self.host_rate_grid_3d(float(redshift), parameters)
+        if not np.any(grid > 0):
+            raise ValueError("No positive S22 host weights at this redshift")
+        rng = np.random.default_rng() if rng is None else rng
+        chosen = rng.choice(grid.size, size=size, p=grid.ravel() / grid.sum())
+        i_mass, i_sfr, i_logz = np.unravel_index(chosen, grid.shape)
+        return {
+            "stellar_mass": 10.0 ** rng.uniform(
+                self.mass_edges[i_mass], self.mass_edges[i_mass + 1]
+            ),
+            "sfr": 10.0 ** rng.uniform(
+                self.sfr_edges[i_sfr], self.sfr_edges[i_sfr + 1]
+            ),
+            "log_metallicity_s22": rng.uniform(
+                self.log_metallicity_edges[i_logz],
+                self.log_metallicity_edges[i_logz + 1],
+            ),
+        }
 
     def sample_hosts(self, redshift: float, size: int, rng=None, parameters: S22BBHParameters | None = None):
         """Sample rate-weighted S22 stellar mass and SFR at one redshift."""

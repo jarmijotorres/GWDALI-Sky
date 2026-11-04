@@ -67,3 +67,36 @@ def test_s22_model_is_available_to_rate_target_pipeline(tmp_path):
         "s22_bbh_empirical", {"data_dir": str(tmp_path), "rate_scale": 2.0}
     )["BBH"](0.5, 9.5)
     np.testing.assert_allclose(doubled, 2.0 * base)
+
+
+def test_compact_histogram_matches_raw_catalogues(tmp_path):
+    raw = _model(tmp_path)
+    metadata = np.frombuffer(
+        b'{"format":"s22_bbh_histogram_v1","metallicity_relation":"M57",'
+        b'"common_envelope":"A3"}', dtype=np.uint8,
+    )
+    histogram = tmp_path / "s22_histogram.npz"
+    np.savez_compressed(
+        histogram,
+        snapshot_numbers=raw.snapshot_numbers,
+        redshifts=raw.redshifts,
+        mass_edges=raw.mass_edges,
+        sfr_edges=raw.sfr_edges,
+        log_metallicity_edges=raw.log_metallicity_edges,
+        rate_sum=raw._rate_sum_3d,
+        occupancy=raw._occupancy_3d,
+        metadata_json=metadata,
+    )
+    compact = S22BBHEmpiricalModel(
+        histogram_file=histogram,
+        metallicity_relation="M57",
+        common_envelope="A3",
+    )
+    kwargs = dict(stellar_mass=10.0**9.5, sfr=10.0**-1.5)
+    assert compact.rate_per_galaxy(0.5, **kwargs) == 20.0
+    assert compact.rate_per_galaxy(
+        0.5, log_metallicity=-2.0, **kwargs
+    ) == 20.0
+    np.testing.assert_allclose(
+        compact.host_rate_grid_3d(0.5), raw.host_rate_grid_3d(0.5)
+    )

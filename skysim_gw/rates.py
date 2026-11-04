@@ -571,10 +571,14 @@ def rate_bbh_bimodal_low10_fixed_z(
 
 
 @lru_cache(maxsize=8)
-def _s22_model(data_dir: str, metallicity_relation: str, common_envelope: str):
+def _s22_model(
+    data_dir: str | None, histogram_file: str | None,
+    metallicity_relation: str, common_envelope: str,
+):
     """Cache the data-backed S22 template while target grids are evaluated."""
     return S22BBHEmpiricalModel(
-        data_dir,
+        data_dir=None if data_dir is None else data_dir,
+        histogram_file=None if histogram_file is None else histogram_file,
         metallicity_relation=metallicity_relation,
         common_envelope=common_envelope,
     )
@@ -583,7 +587,8 @@ def _s22_model(data_dir: str, metallicity_relation: str, common_envelope: str):
 def rate_bbh_s22_empirical(
     z,
     log_mass,
-    data_dir,
+    data_dir=None,
+    histogram_file=None,
     metallicity_relation="M57",
     common_envelope="A3",
     rate_scale=1.0,
@@ -592,14 +597,17 @@ def rate_bbh_s22_empirical(
 ):
     """S22 BBH density R(z, logMstar), marginalized over SFR.
 
-    ``data_dir`` holds the released ``HG_*_BBHs_*`` catalogues.  The result is
+    Supply either ``histogram_file`` (preferred) or ``data_dir`` containing
+    the released ``HG_*_BBHs_*`` catalogues. The result is
     a source-frame density in Gpc^-3 yr^-1 dex^-1 and can therefore feed the
     existing two-dimensional target/Seed workflow.  It is not a replacement
     for :meth:`S22BBHEmpiricalModel.rate_per_galaxy`, which retains SFR when
     weighting individual lightcone galaxies.
     """
     model = _s22_model(
-        str(data_dir), str(metallicity_relation), str(common_envelope)
+        None if data_dir is None else str(data_dir),
+        None if histogram_file is None else str(histogram_file),
+        str(metallicity_relation), str(common_envelope),
     )
     parameters = S22BBHParameters(
         rate_scale=float(rate_scale), mass_tilt=float(mass_tilt),
@@ -660,6 +668,7 @@ def rate_functions_for_model(model_name, model_parameters=None):
         },
         "s22_bbh_empirical": {
             "data_dir",
+            "histogram_file",
             "metallicity_relation",
             "common_envelope",
             "rate_scale",
@@ -672,8 +681,13 @@ def rate_functions_for_model(model_name, model_parameters=None):
         raise ValueError(
             f"Unsupported parameters for {model_name}: {sorted(unknown)}"
         )
-    if model_name == "s22_bbh_empirical" and "data_dir" not in parameters:
-        raise ValueError("s22_bbh_empirical requires bbh_model_parameters.data_dir")
+    if model_name == "s22_bbh_empirical":
+        sources = {"data_dir", "histogram_file"} & parameters.keys()
+        if len(sources) != 1:
+            raise ValueError(
+                "s22_bbh_empirical requires exactly one of "
+                "bbh_model_parameters.data_dir or histogram_file"
+            )
     functions = RATE_FUNCTIONS.copy()
     functions["BBH"] = partial(BBH_RATE_MODELS[model_name], **parameters)
     return functions
