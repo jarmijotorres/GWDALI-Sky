@@ -12,7 +12,57 @@ The reader expects this schema for each configured population (`BBH`, `BHNS`, `B
 /sources/BBH/redshift_true   # 1-D numeric array, dimensionless
 ```
 
-Arrays within a population must have equal length. Additional host properties are allowed but not used by preparation. Missing population groups are skipped. The reader selects finite coordinates and true redshifts within the configured `[ZI, ZF)` interval. These rows are already selected possible event hosts; this stage does not reapply the merger-rate model to an arbitrary unassigned galaxy pool.
+Arrays within a population must have equal length. The known host-provenance
+fields listed below are retained by preparation; unknown extra fields are
+allowed but ignored. Missing population groups are skipped. The reader selects
+finite coordinates and true redshifts within the configured `[ZI, ZF)`
+interval. These rows are already selected possible event hosts; this stage does
+not reapply the merger-rate model to an arbitrary unassigned galaxy pool.
+
+### SFR and FMR host properties
+
+For a new NERSC host assignment, install the companion `SkySim5000_Y1_analysis`
+package in the same environment. `assign-hosts` then derives a dust-corrected
+UV SFR from `sed_1246_306_disk_no_host_extinction` (a 306 Angstrom luminosity
+density chunk) and `A_v_disk`, using the Kennicutt--Evans calibration and a
+Calzetti correction. It records the resulting SFR and the deterministic
+Mannucci et al. (2010) FMR oxygen abundance, `metallicity_fmr_12logoh`, plus
+its validity flags in the seed-host HDF5. These fields propagate into the
+prepared GWDALI catalogue.
+
+The abundance is gas-phase `12 + log10(O/H)`, not a mass fraction and not a
+BBH progenitor-birth metallicity. Invalid/zero SED values and unavailable
+attenuation remain `NaN`; no SFR floor is applied. Configure alternate column
+names or the stated defaults explicitly under `host_property_config` in the
+host-assignment JSON, and preserve that JSON in each output.
+
+```json
+"host_property_config": {
+  "sed_column": "sed_1246_306_disk_no_host_extinction",
+  "av_column": "A_v_disk",
+  "sed_bin_width_angstrom": 306.0,
+  "sfr_calibration": "kennicutt2012",
+  "fmr_alpha": 0.32
+}
+```
+
+### Event oversampling on one SkySim lightcone
+
+Set `event_oversample_factor` in the host-assignment JSON to a positive integer
+to draw that many copies of each already Poisson-drawn target count without
+rereading the catalogue. For example, `8` creates eight times as many events
+from the same SkySim5000 footprint. The output marks every event with
+`event_weight = 1/8` and records the factor in group and file provenance.
+
+This is useful for reducing *GW event-sampling* noise in a fixed-sky bias
+calculation. It is not an eight-times-larger independent cosmological volume:
+duplicated/reused host galaxies share the original LSS realization, so cosmic
+variance and footprint limitations must retain the original 5000-deg2
+interpretation.
+
+```json
+"event_oversample_factor": 8
+```
 
 `rate-targets` and `assign-hosts` are optional upstream steps for rebuilding seeds. Only `skysim_gw/stages/assign_hosts.py` imports GCRCatalogs and mpi4py. It is **NERSC-only as configured**, where the original SkySim5000 catalogue lives, and requires `lsst` group access. Run seed building there and transfer the resulting HDF5 to the analysis machine. Rate calculation itself does not require GCR or NERSC.
 

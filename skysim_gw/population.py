@@ -115,6 +115,12 @@ CONFIG = PopulationConfig(
     **BBH_MASS_PARAMETERS,
 )
 VALID_SOURCE_TYPES = ("BBH", "BHNS", "BNS")
+HOST_PROVENANCE_FIELDS = (
+    "galaxy_id", "stellar_mass", "halo_mass", "is_central",
+    "sfr_uv_corrected", "log_sfr_uv_corrected",
+    "metallicity_fmr_12logoh", "fmr_mu", "fmr_valid", "fmr_extrapolated",
+    "event_weight",
+)
 
 
 # -----------------------------------------------------------------------------
@@ -127,7 +133,8 @@ def read_sources_in_true_redshift_slice(path, zi, zf, source_types):
     Expect /sources/{BBH,BHNS,BNS} groups with equally sized 1-D ra and dec
     datasets in degrees and dimensionless redshift_true. Read configured
     source types and retain finite coordinates with zi <= redshift_true < zf.
-    Missing source-type groups are skipped; extra host properties are ignored.
+    Known host-provenance fields are retained when present so GWDALI products
+    remain traceable to their SFR/FMR-derived host properties.
     """
     if not np.isfinite(zi) or not np.isfinite(zf) or zi >= zf:
         raise ValueError(f"Require finite zi < zf; received zi={zi}, zf={zf}")
@@ -172,6 +179,11 @@ def read_sources_in_true_redshift_slice(path, zi, zf, source_types):
                 "dec_deg": dec[selected],
                 "redshift_true": redshift_true[selected],
             }
+            for field in HOST_PROVENANCE_FIELDS:
+                if field in group:
+                    selected_sources[source_type][field] = np.asarray(
+                        group[field][:]
+                    )[selected]
 
     return selected_sources
 
@@ -487,6 +499,9 @@ def prepare_population(source_type, sources, rng, cosmology=OUTERRIM_COSMOLOGY,
         "phi_coal_rad": rng.uniform(0.0, 2.0 * np.pi, size),
         "t_coal_s": np.zeros(size, dtype=float),
     }
+    for field in HOST_PROVENANCE_FIELDS:
+        if field in sources:
+            result[field] = np.asarray(sources[field])
     result.update(sample_spins(source_type, rng, size, config))
     # Cartesian dimensionless spins required by GWDALI/LAL.  The z axis is
     # aligned with the binary orbital angular momentum.
@@ -543,8 +558,11 @@ def population_to_gwdali_table(population):
         "m1_source_msun": population["m1_source_msun"],
         "m2_source_msun": population["m2_source_msun"],
     }
+    for field in HOST_PROVENANCE_FIELDS:
+        if field in population:
+            values[field] = population[field]
     size = len(population["redshift_true"])
-    table = np.empty(size, dtype=[(name, "f8") for name in values])
+    table = np.empty(size, dtype=[(name, np.asarray(column).dtype) for name, column in values.items()])
     for name, column in values.items():
         table[name] = column
     return table

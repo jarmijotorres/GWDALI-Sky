@@ -25,6 +25,7 @@ import GCRCatalogs
 import h5py
 import numpy as np
 from mpi4py import MPI
+from skysim5000_analysis import derive_host_properties
 
 
 assert "lsst" in subprocess.check_output(["groups"]).decode().split(), (
@@ -47,6 +48,12 @@ CANDIDATE_DTYPE = np.dtype(
         ("stellar_mass", "<f8"),
         ("halo_mass", "<f8"),
         ("is_central", "u1"),
+        ("sfr_uv_corrected", "<f8"),
+        ("log_sfr_uv_corrected", "<f8"),
+        ("metallicity_fmr_12logoh", "<f8"),
+        ("fmr_mu", "<f8"),
+        ("fmr_valid", "u1"),
+        ("fmr_extrapolated", "u1"),
     ]
 )
 
@@ -82,6 +89,10 @@ def load_config(path):
     missing = sorted(required - config.keys())
     if missing:
         raise KeyError(f"Missing configuration entries: {missing}")
+    factor = config.get("event_oversample_factor", 1)
+    if isinstance(factor, bool) or int(factor) != factor or int(factor) < 1:
+        raise ValueError("event_oversample_factor must be a positive integer")
+    config["event_oversample_factor"] = int(factor)
     return config
 
 
@@ -118,6 +129,28 @@ def load_targets(path):
     return zi, zf, mass_edges, targets, expected, target_metadata
 
 
+def oversample_targets(targets, factor):
+    """Scale already Poisson-drawn event targets for catalogue reuse.
+
+    This deliberately does *not* alter the physical rate density or create
+    additional independent SkySim volume.  It creates more draws from the
+    same lightcone, which are tagged with a reciprocal event weight.
+    """
+    factor = int(factor)
+    if factor < 1:
+        raise ValueError("factor must be a positive integer")
+    maximum = np.iinfo(np.int64).max
+    expanded = {}
+    for source_type, values in targets.items():
+        values = np.asarray(values, dtype=np.int64)
+        if np.any(values > maximum // factor):
+            raise OverflowError(
+                f"Oversampled {source_type} target count exceeds int64"
+            )
+        expanded[source_type] = values * factor
+    return expanded
+
+
 def splitmix64(values, key):
     """Fast deterministic 64-bit hash used as a sampling priority."""
     with np.errstate(over="ignore"):
@@ -150,7 +183,7 @@ def assign_bins(redshift_true, stellar_mass, zi, zf, mass_edges):
     return flat_bin
 
 
-def make_candidate_records(data, indices, priorities, id_column):
+def make_candidate_records(data, derived, indices, priorities, id_column):
     records = np.empty(len(indices), dtype=CANDIDATE_DTYPE)
     records["priority"] = priorities
     records["galaxy_id"] = np.asarray(data[id_column])[indices].astype(np.uint64)
@@ -161,6 +194,12 @@ def make_candidate_records(data, indices, priorities, id_column):
     records["stellar_mass"] = np.asarray(data["stellar_mass"])[indices]
     records["halo_mass"] = np.asarray(data["halo_mass"])[indices]
     records["is_central"] = np.asarray(data["is_central"])[indices].astype(np.uint8)
+    records["sfr_uv_corrected"] = derived["sfr_uv_corrected"][indices]
+    records["log_sfr_uv_corrected"] = derived["log_sfr_uv_corrected"][indices]
+    records["metallicity_fmr_12logoh"] = derived["metallicity_fmr_12logoh"][indices]
+    records["fmr_mu"] = derived["fmr_mu"][indices]
+    records["fmr_valid"] = derived["fmr_valid"][indices].astype(np.uint8)
+    records["fmr_extrapolated"] = derived["fmr_extrapolated"][indices].astype(np.uint8)
     return records
 
 
@@ -186,6 +225,18 @@ def process_chunk(data, zi, zf, mass_edges, targets, availability,
     galaxy_id = np.asarray(data[id_column])
     redshift_true = np.asarray(data["redshift_true"])
     stellar_mass = np.asarray(data["stellar_mass"])
+    property_config = config.get("host_property_config", {})
+    derived = derive_host_properties(
+        data,
+        sed_column=property_config.get(
+            "sed_column", "sed_1246_306_disk_no_host_extinction"
+        ),
+        av_column=property_config.get("av_column", "A_v_disk"),
+        stellar_mass_column="stellar_mass",
+        sed_bin_width_angstrom=float(property_config.get("sed_bin_width_angstrom", 306.0)),
+        sfr_calibration=property_config.get("sfr_calibration", "kennicutt2012"),
+        fmr_alpha=float(property_config.get("fmr_alpha", 0.32)),
+    )
 
     valid = (
         np.isfinite(redshift_true)
@@ -227,7 +278,7 @@ def process_chunk(data, zi, zf, mass_edges, targets, availability,
             else:
                 indices = in_bin
             new_records = make_candidate_records(
-                data, indices, priorities, id_column
+                data, derived, indices, priorities, id_column
             )
             key = (source_type, int(bin_number))
             reservoirs[key] = keep_smallest(
@@ -260,7 +311,8 @@ def merge_rank_reservoirs(rank_reservoirs, targets):
     return merged
 
 
-def finalize_sources(merged, targets, availability, selection_seed):
+def finalize_sources(merged, targets, availability, selection_seed,
+                     event_oversample_factor=1):
     """Create final per-type event records and handle deficient bins."""
     rng = np.random.default_rng(int(selection_seed))
     final = {}
@@ -273,6 +325,7 @@ def finalize_sources(merged, targets, availability, selection_seed):
             ("z_bin", "<i4"),
             ("mass_bin", "<i4"),
             ("sampled_with_replacement", "u1"),
+            ("event_weight", "<f8"),
         ]
     )
     n_mass_bins = availability.shape[1]
@@ -317,6 +370,7 @@ def finalize_sources(merged, targets, availability, selection_seed):
             records["z_bin"] = bin_number // n_mass_bins
             records["mass_bin"] = bin_number % n_mass_bins
             records["sampled_with_replacement"] = replacement_flags
+            records["event_weight"] = 1.0 / float(event_oversample_factor)
             pieces.append(records)
             assigned.ravel()[bin_number] = chosen.size
 
@@ -374,8 +428,18 @@ def write_output(path, config, config_path, targets_path, zi, zf, mass_edges,
                 records = final_sources[source_type]
                 group.attrs["n_sources"] = len(records)
                 group.attrs["n_requested"] = int(targets[source_type].sum())
+                group.attrs["n_poisson_drawn_before_oversampling"] = int(
+                    targets[source_type].sum()
+                    // config["event_oversample_factor"]
+                )
                 group.attrs["n_replacement"] = int(
                     replacement_grid[source_type].sum()
+                )
+                group.attrs["event_oversample_factor"] = int(
+                    config["event_oversample_factor"]
+                )
+                group.attrs["event_weight"] = 1.0 / float(
+                    config["event_oversample_factor"]
                 )
                 for field in records.dtype.names:
                     group.create_dataset(
@@ -414,8 +478,11 @@ def main():
     preflight_error = comm.bcast(preflight_error, root=0)
     if preflight_error:
         raise FileExistsError(preflight_error)
-    zi, zf, mass_edges, targets, expected, _ = comm.bcast(
+    zi, zf, mass_edges, base_targets, expected, _ = comm.bcast(
         target_payload, root=0
+    )
+    targets = oversample_targets(
+        base_targets, config["event_oversample_factor"]
     )
 
     GCRCatalogs.ConfigSource.set_config_source(dr=False)
@@ -430,6 +497,10 @@ def main():
         "stellar_mass",
         "halo_mass",
         "is_central",
+        config.get("host_property_config", {}).get(
+            "sed_column", "sed_1246_306_disk_no_host_extinction"
+        ),
+        config.get("host_property_config", {}).get("av_column", "A_v_disk"),
     ]
     missing = [q for q in required_quantities if not catalog.has_quantity(q)]
     all_missing = comm.gather(missing, root=0)
@@ -510,8 +581,14 @@ def main():
             targets,
             global_availability,
             config["selection_seed"],
+            config["event_oversample_factor"],
         )
         elapsed = MPI.Wtime() - start
+        property_config = config.get("host_property_config", {})
+        sed_column = property_config.get(
+            "sed_column", "sed_1246_306_disk_no_host_extinction"
+        )
+        av_column = property_config.get("av_column", "A_v_disk")
         run_summary = {
             "catalog": config["catalog_name"],
             "mpi_ranks": size,
@@ -523,6 +600,17 @@ def main():
             "selection_method": "deterministic distributed top-k hash priority",
             "mass_variable": "log10(stellar_mass / Msun)",
             "redshift_variable": "redshift_true",
+            "event_oversample_factor": config["event_oversample_factor"],
+            "event_weight": 1.0 / config["event_oversample_factor"],
+            "oversampling_interpretation": (
+                "Repeated sampling of one SkySim lightcone; not independent "
+                "sky area or reduced cosmic variance"
+            ),
+            "host_properties": (
+                "dust-corrected UV SFR from "
+                f"{sed_column} and {av_column}; "
+                "Mannucci2010 FMR gas-phase 12+log10(O/H)"
+            ),
         }
         write_output(
             config["output_file"],
