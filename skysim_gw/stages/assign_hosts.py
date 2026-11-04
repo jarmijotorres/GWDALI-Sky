@@ -25,7 +25,7 @@ import GCRCatalogs
 import h5py
 import numpy as np
 from mpi4py import MPI
-from skysim5000_analysis import derive_host_properties
+from skysim_gw.host_properties import derive_host_properties
 
 
 assert "lsst" in subprocess.check_output(["groups"]).decode().split(), (

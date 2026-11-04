@@ -21,9 +21,10 @@ not reapply the merger-rate model to an arbitrary unassigned galaxy pool.
 
 ### SFR and FMR host properties
 
-For a new NERSC host assignment, install the companion `SkySim5000_Y1_analysis`
-package in the same environment. `assign-hosts` then derives a dust-corrected
-UV SFR from `sed_1246_306_disk_no_host_extinction` (a 306 Angstrom luminosity
+The production calculation is bundled in `skysim_gw.host_properties`, so a
+new NERSC host assignment does not require the separate
+`SkySim5000_Y1_analysis` repository. `assign-hosts` derives a dust-corrected UV
+SFR from `sed_1246_306_disk_no_host_extinction` (a 306 Angstrom luminosity
 density chunk) and `A_v_disk`, using the Kennicutt--Evans calibration and a
 Calzetti correction. It records the resulting SFR and the deterministic
 Mannucci et al. (2010) FMR oxygen abundance, `metallicity_fmr_12logoh`, plus
