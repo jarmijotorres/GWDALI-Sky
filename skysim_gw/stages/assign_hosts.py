@@ -249,7 +249,15 @@ def process_chunk(data, zi, zf, mass_edges, targets, availability,
         ),
         av_column=property_config.get("av_column", "A_v_disk"),
         stellar_mass_column="stellar_mass",
-        sed_bin_width_angstrom=float(property_config.get("sed_bin_width_angstrom", 306.0)),
+        sed_start_angstrom=float(
+            property_config.get("sed_start_angstrom", 1246.0)
+        ),
+        sed_bin_width_angstrom=float(
+            property_config.get("sed_bin_width_angstrom", 306.0)
+        ),
+        apply_host_extinction_correction=bool(
+            property_config.get("apply_host_extinction_correction", False)
+        ),
         sfr_calibration=property_config.get("sfr_calibration", "kennicutt2012"),
         fmr_alpha=float(property_config.get("fmr_alpha", 0.32)),
     )
@@ -511,6 +519,7 @@ def main():
     GCRCatalogs.ConfigSource.set_config_source(dr=False)
     catalog = GCRCatalogs.load_catalog(config["catalog_name"])
     id_column = config["galaxy_id_column"]
+    property_config = config.get("host_property_config", {})
     required_quantities = [
         id_column,
         "ra",
@@ -520,11 +529,14 @@ def main():
         "stellar_mass",
         "halo_mass",
         "is_central",
-        config.get("host_property_config", {}).get(
+        property_config.get(
             "sed_column", "sed_1246_306_disk_no_host_extinction"
         ),
-        config.get("host_property_config", {}).get("av_column", "A_v_disk"),
     ]
+    if property_config.get("apply_host_extinction_correction", False):
+        required_quantities.append(
+            property_config.get("av_column", "A_v_disk")
+        )
     missing = [q for q in required_quantities if not catalog.has_quantity(q)]
     all_missing = comm.gather(missing, root=0)
     if rank == 0:
@@ -613,6 +625,9 @@ def main():
             "sed_column", "sed_1246_306_disk_no_host_extinction"
         )
         av_column = property_config.get("av_column", "A_v_disk")
+        apply_extinction = bool(
+            property_config.get("apply_host_extinction_correction", False)
+        )
         run_summary = {
             "catalog": config["catalog_name"],
             "mpi_ranks": size,
@@ -632,9 +647,13 @@ def main():
                 "sky area or reduced cosmic variance"
             ),
             "host_properties": (
-                "dust-corrected UV SFR from "
-                f"{sed_column} and {av_column}; "
-                "Mannucci2010 FMR gas-phase 12+log10(O/H)"
+                "UV SFR from integrated rest-frame AB luminosity in "
+                f"{sed_column}; host-extinction correction "
+                + (
+                    f"applied using {av_column}; "
+                    if apply_extinction else "not applied; "
+                )
+                + "Mannucci2010 FMR gas-phase 12+log10(O/H)"
             ),
         }
         write_output(

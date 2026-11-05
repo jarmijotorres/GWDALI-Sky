@@ -23,25 +23,28 @@ not reapply the merger-rate model to an arbitrary unassigned galaxy pool.
 
 The production calculation is bundled in `skysim_gw.host_properties`, so a
 new NERSC host assignment does not require the separate
-`SkySim5000_Y1_analysis` repository. `assign-hosts` derives a dust-corrected UV
-SFR from `sed_1246_306_disk_no_host_extinction` (a 306 Angstrom luminosity
-density chunk) and `A_v_disk`, using the Kennicutt--Evans calibration and a
-Calzetti correction. It records the resulting SFR and the deterministic
+`SkySim5000_Y1_analysis` repository. `assign-hosts` derives an intrinsic UV
+SFR from `sed_1246_306_disk_no_host_extinction`, an integrated rest-frame AB
+luminosity in units of `4.4659e13 W Hz^-1`, using the Kennicutt--Evans
+calibration. Because this column is already free of host extinction, the
+default calculation does not apply `A_v_disk` a second time. It records the
+resulting SFR and the deterministic
 Mannucci et al. (2010) FMR oxygen abundance, `metallicity_fmr_12logoh`, plus
 its validity flags in the seed-host HDF5. These fields propagate into the
 prepared GWDALI catalogue.
 
 The abundance is gas-phase `12 + log10(O/H)`, not a mass fraction and not a
-BBH progenitor-birth metallicity. Invalid/zero SED values and unavailable
-attenuation remain `NaN`; no SFR floor is applied. Configure alternate column
+BBH progenitor-birth metallicity. Invalid/zero SED values remain `NaN`; no SFR
+floor is applied. Configure alternate column
 names or the stated defaults explicitly under `host_property_config` in the
 host-assignment JSON, and preserve that JSON in each output.
 
 ```json
 "host_property_config": {
   "sed_column": "sed_1246_306_disk_no_host_extinction",
-  "av_column": "A_v_disk",
+  "sed_start_angstrom": 1246.0,
   "sed_bin_width_angstrom": 306.0,
+  "apply_host_extinction_correction": false,
   "sfr_calibration": "kennicutt2012",
   "fmr_alpha": 0.32
 }

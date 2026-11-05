@@ -15,7 +15,8 @@ import numpy as np
 SED_UV_COLUMN = "sed_1246_306_disk_no_host_extinction"
 AV_COLUMN = "A_v_disk"
 STELLAR_MASS_COLUMN = "stellar_mass"
-L_SUN_ERG_S = 3.846e33
+SED_AB_LNU_UNIT_ERG_S_HZ = 4.4659e20
+C_ANGSTROM_S = 2.99792458e18
 CALZETTI_A1600_OVER_AV = 10.33 / 4.05
 FMR_MU_MIN = 8.7
 FMR_MU_MAX = 11.2
@@ -27,21 +28,30 @@ def derive_host_properties(
     sed_column: str = SED_UV_COLUMN,
     av_column: str = AV_COLUMN,
     stellar_mass_column: str = STELLAR_MASS_COLUMN,
+    sed_start_angstrom: float = 1246.0,
     sed_bin_width_angstrom: float = 306.0,
+    apply_host_extinction_correction: bool = False,
     sfr_calibration: str = "kennicutt2012",
     fmr_alpha: float = 0.32,
 ) -> dict[str, np.ndarray]:
-    """Derive dust-corrected UV SFR and Mannucci et al. (2010) FMR.
+    """Derive UV SFR and Mannucci et al. (2010) FMR.
 
-    The SkySim SED chunk is treated as luminosity density in
-    ``L_sun / Angstrom``.  The metallicity output is gas-phase
-    ``12 + log10(O/H)``; it is not a metal mass fraction or raw S22 logZ.
-    Invalid/non-positive SED values remain NaN and no SFR floor is imposed.
+    SkySim SED chunks are integrated rest-frame AB luminosities in units of
+    ``4.4659e13 W Hz^-1``.  The default input is already corrected for host
+    extinction, so no additional ``A_V`` correction is applied unless
+    ``apply_host_extinction_correction=True``.  The metallicity output is
+    gas-phase ``12 + log10(O/H)``; it is not a metal mass fraction or raw S22
+    logZ. Invalid/non-positive SED values remain NaN and no SFR floor is
+    imposed.
     """
-    required = (sed_column, av_column, stellar_mass_column)
+    required = [sed_column, stellar_mass_column]
+    if apply_host_extinction_correction:
+        required.append(av_column)
     missing = [name for name in required if name not in data]
     if missing:
         raise KeyError(f"Missing host-property inputs: {missing}")
+    if not np.isfinite(sed_start_angstrom) or sed_start_angstrom <= 0:
+        raise ValueError("sed_start_angstrom must be finite and positive")
     if not np.isfinite(sed_bin_width_angstrom) or sed_bin_width_angstrom <= 0:
         raise ValueError("sed_bin_width_angstrom must be finite and positive")
     if sfr_calibration != "kennicutt2012":
@@ -50,16 +60,19 @@ def derive_host_properties(
         raise ValueError("fmr_alpha must be finite")
 
     sed_flux = np.asarray(data[sed_column], dtype=np.float64)
-    av = np.asarray(data[av_column], dtype=np.float64)
     stellar_mass = np.asarray(data[stellar_mass_column], dtype=np.float64)
-    if not (sed_flux.shape == av.shape == stellar_mass.shape):
-        raise ValueError("SED flux, A_v, and stellar mass must have equal shapes")
+    if sed_flux.shape != stellar_mass.shape:
+        raise ValueError("SED luminosity and stellar mass must have equal shapes")
+    av = None
+    if apply_host_extinction_correction:
+        av = np.asarray(data[av_column], dtype=np.float64)
+        if av.shape != sed_flux.shape:
+            raise ValueError("SED luminosity and A_v must have equal shapes")
 
-    uv_luminosity = sed_flux * sed_bin_width_angstrom * L_SUN_ERG_S
-    valid_sfr = (
-        np.isfinite(uv_luminosity) & (uv_luminosity > 0.0)
-        & np.isfinite(av)
-    )
+    central_wavelength = sed_start_angstrom + 0.5 * sed_bin_width_angstrom
+    frequency_hz = C_ANGSTROM_S / central_wavelength
+    uv_luminosity = sed_flux * SED_AB_LNU_UNIT_ERG_S_HZ * frequency_hz
+    valid_sfr = np.isfinite(uv_luminosity) & (uv_luminosity > 0.0)
     log_sfr_observed = np.full(sed_flux.shape, np.nan)
     log_sfr_observed[valid_sfr] = (
         np.log10(uv_luminosity[valid_sfr]) - 43.35
@@ -67,12 +80,14 @@ def derive_host_properties(
     sfr_observed = np.full(sed_flux.shape, np.nan)
     sfr_observed[valid_sfr] = 10.0 ** log_sfr_observed[valid_sfr]
 
-    attenuation_1600 = np.clip(av, 0.0, 10.0) * CALZETTI_A1600_OVER_AV
-    log_sfr_corrected = np.full(sed_flux.shape, np.nan)
-    log_sfr_corrected[valid_sfr] = (
-        log_sfr_observed[valid_sfr]
-        + 0.4 * attenuation_1600[valid_sfr]
-    )
+    log_sfr_corrected = log_sfr_observed.copy()
+    if apply_host_extinction_correction:
+        valid_attenuation = valid_sfr & np.isfinite(av)
+        log_sfr_corrected[valid_sfr & ~np.isfinite(av)] = np.nan
+        attenuation_1600 = np.clip(av, 0.0, 10.0) * CALZETTI_A1600_OVER_AV
+        log_sfr_corrected[valid_attenuation] += (
+            0.4 * attenuation_1600[valid_attenuation]
+        )
     sfr_corrected = np.full(sed_flux.shape, np.nan)
     sfr_corrected[valid_sfr] = 10.0 ** log_sfr_corrected[valid_sfr]
 
