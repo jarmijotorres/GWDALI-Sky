@@ -89,6 +89,22 @@ def load_config(path):
     missing = sorted(required - config.keys())
     if missing:
         raise KeyError(f"Missing configuration entries: {missing}")
+    source_types = config.get("source_types", list(SOURCE_TYPES))
+    if (
+        not isinstance(source_types, list)
+        or not source_types
+        or any(not isinstance(value, str) for value in source_types)
+    ):
+        raise ValueError("source_types must be a non-empty JSON list of strings")
+    source_types = [value.upper() for value in source_types]
+    unknown = sorted(set(source_types) - set(SOURCE_TYPES))
+    if unknown:
+        raise ValueError(
+            f"Unsupported source_types {unknown}; choose from {SOURCE_TYPES}"
+        )
+    if len(set(source_types)) != len(source_types):
+        raise ValueError("source_types must not contain duplicates")
+    config["source_types"] = source_types
     factor = config.get("event_oversample_factor", 1)
     if isinstance(factor, bool) or int(factor) != factor or int(factor) < 1:
         raise ValueError("event_oversample_factor must be a positive integer")
@@ -96,18 +112,18 @@ def load_config(path):
     return config
 
 
-def load_targets(path):
+def load_targets(path, source_types=SOURCE_TYPES):
     with h5py.File(path, "r") as data:
         zi = data["bins/zi"][:]
         zf = data["bins/zf"][:]
         mass_edges = data["bins/log_stellar_mass_edges"][:]
         targets = {
             source_type: data[f"drawn/{source_type}"][:].astype(np.int64)
-            for source_type in SOURCE_TYPES
+            for source_type in source_types
         }
         expected = {
             source_type: data[f"expected/{source_type}"][:].astype(np.float64)
-            for source_type in SOURCE_TYPES
+            for source_type in source_types
         }
         target_metadata = {
             key: value for key, value in data.attrs.items()
@@ -118,7 +134,7 @@ def load_targets(path):
         raise ValueError("Invalid redshift bins in target file")
     if np.any(np.diff(mass_edges) <= 0.0):
         raise ValueError("Invalid stellar-mass edges in target file")
-    for source_type in SOURCE_TYPES:
+    for source_type in source_types:
         if targets[source_type].shape != shape:
             raise ValueError(
                 f"drawn/{source_type} has shape {targets[source_type].shape}, "
@@ -264,7 +280,7 @@ def process_chunk(data, zi, zf, mass_edges, targets, availability,
         in_bin = valid_indices[valid_bins == bin_number]
         if in_bin.size == 0:
             continue
-        for source_type in SOURCE_TYPES:
+        for source_type in targets:
             limit = int(targets[source_type].ravel()[bin_number])
             if limit == 0:
                 continue
@@ -287,27 +303,32 @@ def process_chunk(data, zi, zf, mass_edges, targets, availability,
     return len(galaxy_id), len(valid_indices)
 
 
-def merge_rank_reservoirs(rank_reservoirs, targets):
-    merged = {}
-    for source_type in SOURCE_TYPES:
+def merge_distributed_reservoirs(comm, reservoirs, targets):
+    """Merge rank-local top-k reservoirs one target bin at a time.
+
+    A single pickled gather of all populations can exceed mpi4py/MPI message
+    limits for oversampled catalogues. Bin-wise collectives keep each message
+    bounded by one target cell and let rank 0 discard non-winning candidates
+    immediately.
+    """
+    merged = {} if comm.Get_rank() == 0 else None
+    empty = np.empty(0, dtype=CANDIDATE_DTYPE)
+    for source_type in targets:
         for bin_number, limit_value in enumerate(targets[source_type].ravel()):
             limit = int(limit_value)
             if limit == 0:
                 continue
-            arrays = [
-                rank_data[(source_type, bin_number)]
-                for rank_data in rank_reservoirs
-                if (source_type, bin_number) in rank_data
-            ]
-            if not arrays:
-                merged[(source_type, bin_number)] = np.empty(
-                    0, dtype=CANDIDATE_DTYPE
-                )
-                continue
-            combined = np.concatenate(arrays)
-            merged[(source_type, bin_number)] = keep_smallest(
-                None, combined, limit
-            )
+            local = reservoirs.get((source_type, bin_number), empty)
+            arrays = comm.gather(local, root=0)
+            if comm.Get_rank() == 0:
+                nonempty = [array for array in arrays if array.size]
+                if nonempty:
+                    combined = np.concatenate(nonempty)
+                    merged[(source_type, bin_number)] = keep_smallest(
+                        None, combined, limit
+                    )
+                else:
+                    merged[(source_type, bin_number)] = empty.copy()
     return merged
 
 
@@ -330,7 +351,7 @@ def finalize_sources(merged, targets, availability, selection_seed,
     )
     n_mass_bins = availability.shape[1]
 
-    for source_type in SOURCE_TYPES:
+    for source_type in targets:
         pieces = []
         assigned = np.zeros_like(targets[source_type], dtype=np.int64)
         replacements = np.zeros_like(targets[source_type], dtype=np.int64)
@@ -416,7 +437,7 @@ def write_output(path, config, config_path, targets_path, zi, zf, mass_edges,
             replacement_group = output.create_group("replacement")
             sources_group = output.create_group("sources")
 
-            for source_type in SOURCE_TYPES:
+            for source_type in targets:
                 expected_group.create_dataset(source_type, data=expected[source_type])
                 target_group.create_dataset(source_type, data=targets[source_type])
                 assigned_group.create_dataset(source_type, data=assigned_grid[source_type])
@@ -471,7 +492,9 @@ def main():
             if output_exists and not config["overwrite"]
             else None
         )
-        target_payload = load_targets(config["targets_file"])
+        target_payload = load_targets(
+            config["targets_file"], config["source_types"]
+        )
     else:
         preflight_error = None
         target_payload = None
@@ -516,7 +539,9 @@ def main():
         catalog.available_healpix_pixels, dtype=np.int64
     )
     my_native_pixels = all_native_pixels[rank::size]
-    availability = np.zeros(targets["BBH"].shape, dtype=np.int64)
+    availability = np.zeros(
+        next(iter(targets.values())).shape, dtype=np.int64
+    )
     reservoirs = {}
     filters = [
         "stellar_mass > 0",
@@ -569,13 +594,12 @@ def main():
         np.empty_like(availability) if rank == 0 else None
     )
     comm.Reduce(availability, global_availability, op=MPI.SUM, root=0)
-    rank_reservoirs = comm.gather(reservoirs, root=0)
     total_rows = comm.reduce(rows_read, op=MPI.SUM, root=0)
     total_valid = comm.reduce(valid_rows, op=MPI.SUM, root=0)
     total_chunks = comm.reduce(chunks, op=MPI.SUM, root=0)
+    merged = merge_distributed_reservoirs(comm, reservoirs, targets)
 
     if rank == 0:
-        merged = merge_rank_reservoirs(rank_reservoirs, targets)
         final_sources, assigned_grid, replacement_grid = finalize_sources(
             merged,
             targets,
@@ -600,6 +624,7 @@ def main():
             "selection_method": "deterministic distributed top-k hash priority",
             "mass_variable": "log10(stellar_mass / Msun)",
             "redshift_variable": "redshift_true",
+            "source_types": ",".join(config["source_types"]),
             "event_oversample_factor": config["event_oversample_factor"],
             "event_weight": 1.0 / config["event_oversample_factor"],
             "oversampling_interpretation": (
@@ -633,7 +658,7 @@ def main():
             f"in {elapsed / 60:.1f} min",
             flush=True,
         )
-        for source_type in SOURCE_TYPES:
+        for source_type in targets:
             print(
                 f"{source_type}: requested={targets[source_type].sum():,} "
                 f"assigned={len(final_sources[source_type]):,} "

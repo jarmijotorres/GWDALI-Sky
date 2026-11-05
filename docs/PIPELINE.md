@@ -65,6 +65,17 @@ interpretation.
 "event_oversample_factor": 8
 ```
 
+For a BBH-only analysis, also set:
+
+```json
+"source_types": ["BBH"]
+```
+
+This prevents the substantially larger BNS and BHNS target populations from
+being selected, oversampled, or transferred through MPI. Rank-local candidate
+reservoirs are merged one `(source type, redshift, mass)` cell at a time so an
+oversampled run does not create one oversized pickled `MPI.gather` message.
+
 `rate-targets` and `assign-hosts` are optional upstream steps for rebuilding seeds. Only `skysim_gw/stages/assign_hosts.py` imports GCRCatalogs and mpi4py. It is **NERSC-only as configured**, where the original SkySim5000 catalogue lives, and requires `lsst` group access. Run seed building there and transfer the resulting HDF5 to the analysis machine. Rate calculation itself does not require GCR or NERSC.
 
 ### S22 empirical BBH Seeds
