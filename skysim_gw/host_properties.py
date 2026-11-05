@@ -18,8 +18,12 @@ STELLAR_MASS_COLUMN = "stellar_mass"
 SED_AB_LNU_UNIT_ERG_S_HZ = 4.4659e20
 C_ANGSTROM_S = 2.99792458e18
 CALZETTI_A1600_OVER_AV = 10.33 / 4.05
-FMR_MU_MIN = 8.7
-FMR_MU_MAX = 11.2
+FMR_MU_MIN = 8.3
+FMR_MU_MAX = 11.5
+FMR_LOG_SFR_MIN = -4.0
+FMR_LOG_SFR_MAX = 2.5
+S22_SOLAR_METALLICITY = 0.0153
+S22_SOLAR_OXYGEN_ABUNDANCE = 8.76
 
 
 def derive_host_properties(
@@ -34,7 +38,7 @@ def derive_host_properties(
     sfr_calibration: str = "kennicutt2012",
     fmr_alpha: float = 0.32,
 ) -> dict[str, np.ndarray]:
-    """Derive UV SFR and Mannucci et al. (2010) FMR.
+    """Derive UV SFR and the Mannucci et al. (2011) equation-2 FMR.
 
     SkySim SED chunks are integrated rest-frame AB luminosities in units of
     ``4.4659e13 W Hz^-1``.  The default input is already corrected for host
@@ -95,16 +99,36 @@ def derive_host_properties(
     valid_mass = np.isfinite(stellar_mass) & (stellar_mass > 0.0)
     log_mass[valid_mass] = np.log10(stellar_mass[valid_mass])
     fmr_valid = valid_mass & np.isfinite(log_sfr_corrected)
+    log_sfr_fmr = np.full(stellar_mass.shape, np.nan)
+    log_sfr_fmr[fmr_valid] = np.clip(
+        log_sfr_corrected[fmr_valid], FMR_LOG_SFR_MIN, FMR_LOG_SFR_MAX
+    )
+    fmr_sfr_clipped = fmr_valid & (
+        log_sfr_corrected != log_sfr_fmr
+    )
     fmr_mu = np.full(stellar_mass.shape, np.nan)
     fmr_mu[fmr_valid] = (
-        log_mass[fmr_valid] - fmr_alpha * log_sfr_corrected[fmr_valid]
+        log_mass[fmr_valid] - fmr_alpha * log_sfr_fmr[fmr_valid]
     )
-    offset = fmr_mu - 10.0
-    metallicity = np.full(stellar_mass.shape, np.nan)
-    metallicity[fmr_valid] = (
-        8.90 + 0.37 * offset[fmr_valid]
-        - 0.14 * offset[fmr_valid] ** 2
-        - 0.19 * offset[fmr_valid] ** 3
+    mass_offset = log_mass - 10.0
+    high_mu = fmr_valid & (fmr_mu >= 9.5)
+    low_mu = fmr_valid & ~high_mu
+    metallicity_12logoh = np.full(stellar_mass.shape, np.nan)
+    metallicity_12logoh[high_mu] = (
+        8.90
+        + 0.37 * mass_offset[high_mu]
+        - 0.14 * log_sfr_fmr[high_mu]
+        - 0.19 * mass_offset[high_mu] ** 2
+        + 0.12 * mass_offset[high_mu] * log_sfr_fmr[high_mu]
+        - 0.054 * log_sfr_fmr[high_mu] ** 2
+    )
+    metallicity_12logoh[low_mu] = (
+        8.93 + 0.51 * (fmr_mu[low_mu] - 10.0)
+    )
+    metallicity_log10_z = (
+        np.log10(S22_SOLAR_METALLICITY)
+        + metallicity_12logoh
+        - S22_SOLAR_OXYGEN_ABUNDANCE
     )
     fmr_extrapolated = fmr_valid & (
         (fmr_mu < FMR_MU_MIN) | (fmr_mu > FMR_MU_MAX)
@@ -116,7 +140,10 @@ def derive_host_properties(
         "sfr_uv_observed": sfr_observed,
         "log_sfr_uv_corrected": log_sfr_corrected,
         "sfr_uv_corrected": sfr_corrected,
-        "metallicity_fmr_12logoh": metallicity,
+        "log_sfr_fmr": log_sfr_fmr,
+        "fmr_sfr_clipped": fmr_sfr_clipped,
+        "metallicity_fmr_12logoh": metallicity_12logoh,
+        "metallicity_fmr_log10_z": metallicity_log10_z,
         "fmr_mu": fmr_mu,
         "fmr_valid": fmr_valid,
         "fmr_extrapolated": fmr_extrapolated,

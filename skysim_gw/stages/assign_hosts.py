@@ -50,7 +50,10 @@ CANDIDATE_DTYPE = np.dtype(
         ("is_central", "u1"),
         ("sfr_uv_corrected", "<f8"),
         ("log_sfr_uv_corrected", "<f8"),
+        ("log_sfr_fmr", "<f8"),
+        ("fmr_sfr_clipped", "u1"),
         ("metallicity_fmr_12logoh", "<f8"),
+        ("metallicity_fmr_log10_z", "<f8"),
         ("fmr_mu", "<f8"),
         ("fmr_valid", "u1"),
         ("fmr_extrapolated", "u1"),
@@ -212,7 +215,14 @@ def make_candidate_records(data, derived, indices, priorities, id_column):
     records["is_central"] = np.asarray(data["is_central"])[indices].astype(np.uint8)
     records["sfr_uv_corrected"] = derived["sfr_uv_corrected"][indices]
     records["log_sfr_uv_corrected"] = derived["log_sfr_uv_corrected"][indices]
+    records["log_sfr_fmr"] = derived["log_sfr_fmr"][indices]
+    records["fmr_sfr_clipped"] = derived["fmr_sfr_clipped"][indices].astype(
+        np.uint8
+    )
     records["metallicity_fmr_12logoh"] = derived["metallicity_fmr_12logoh"][indices]
+    records["metallicity_fmr_log10_z"] = derived[
+        "metallicity_fmr_log10_z"
+    ][indices]
     records["fmr_mu"] = derived["fmr_mu"][indices]
     records["fmr_valid"] = derived["fmr_valid"][indices].astype(np.uint8)
     records["fmr_extrapolated"] = derived["fmr_extrapolated"][indices].astype(np.uint8)
@@ -653,7 +663,9 @@ def main():
                     f"applied using {av_column}; "
                     if apply_extinction else "not applied; "
                 )
-                + "Mannucci2010 FMR gas-phase 12+log10(O/H)"
+                + "Mannucci2011 equation 2 FMR with logSFR clipped to "
+                "[-4, 2.5], storing gas-phase 12+log10(O/H) and absolute "
+                "log10(Z) with Zsun=0.0153 and solar 12+log10(O/H)=8.76"
             ),
         }
         write_output(

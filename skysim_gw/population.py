@@ -118,7 +118,9 @@ VALID_SOURCE_TYPES = ("BBH", "BHNS", "BNS")
 HOST_PROVENANCE_FIELDS = (
     "galaxy_id", "stellar_mass", "halo_mass", "is_central",
     "sfr_uv_corrected", "log_sfr_uv_corrected",
-    "metallicity_fmr_12logoh", "fmr_mu", "fmr_valid", "fmr_extrapolated",
+    "log_sfr_fmr", "fmr_sfr_clipped",
+    "metallicity_fmr_12logoh", "metallicity_fmr_log10_z",
+    "fmr_mu", "fmr_valid", "fmr_extrapolated",
     "event_weight",
 )
 

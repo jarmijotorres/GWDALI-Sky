@@ -28,14 +28,18 @@ SFR from `sed_1246_306_disk_no_host_extinction`, an integrated rest-frame AB
 luminosity in units of `4.4659e13 W Hz^-1`, using the Kennicutt--Evans
 calibration. Because this column is already free of host extinction, the
 default calculation does not apply `A_v_disk` a second time. It records the
-resulting SFR and the deterministic
-Mannucci et al. (2010) FMR oxygen abundance, `metallicity_fmr_12logoh`, plus
-its validity flags in the seed-host HDF5. These fields propagate into the
-prepared GWDALI catalogue.
+resulting SFR and the deterministic Mannucci et al. (2011) equation-2 FMR
+oxygen abundance, `metallicity_fmr_12logoh`. For consistency with the S22
+passive-galaxy prescription, only the FMR input is clipped to
+`-4 <= log10(SFR) <= 2.5`; the raw inferred SFR is retained unchanged and the
+clip is recorded in `fmr_sfr_clipped`. The output also stores
+`metallicity_fmr_log10_z`, converted to absolute `log10(Z)` with the S22
+choices `Z_sun=0.0153` and solar `12+log10(O/H)=8.76`. These fields and their
+validity flags propagate into the prepared GWDALI catalogue.
 
-The abundance is gas-phase `12 + log10(O/H)`, not a mass fraction and not a
-BBH progenitor-birth metallicity. Invalid/zero SED values remain `NaN`; no SFR
-floor is applied. Configure alternate column
+The oxygen abundance is a gas-phase host property, not a BBH
+progenitor-birth metallicity. Invalid/zero SED values remain `NaN`; no floor
+is applied to the stored UV SFR. Configure alternate column
 names or the stated defaults explicitly under `host_property_config` in the
 host-assignment JSON, and preserve that JSON in each output.
 
