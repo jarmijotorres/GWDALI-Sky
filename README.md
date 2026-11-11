@@ -60,7 +60,9 @@ python scripts/prepare_bbh_realizations.py \
 
 After producing ten `gw_hosts_s22_rXXXX.hdf5` files with the S22 target
 configuration, include `--models fh0 fh1 s22` (or run `--models s22`) to
-prepare their independent `Populations/s22/` realization set.
+prepare their independent `Populations/s22/` realization set.  Use
+`--realizations N` for inputs numbered `r0000` through `r(N-1)` instead of
+the default ten realizations.
 
 This produces files such as
 `Populations/fh0/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz`.

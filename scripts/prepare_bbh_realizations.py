@@ -34,6 +34,13 @@ def parse_args():
     parser.add_argument("--zf", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument(
+        "--realizations", type=int, default=10,
+        help=(
+            "Number of consecutively numbered realizations to prepare "
+            "(r0000 through rNNNN; default: 10)"
+        ),
+    )
+    parser.add_argument(
         "--models",
         nargs="+",
         choices=("fh0", "fh1", "s22"),
@@ -74,18 +81,25 @@ def write_catalogue(path: Path, population, zi: float, zf: float, seed: int):
 
 def main():
     args = parse_args()
+    if args.realizations <= 0:
+        raise ValueError("--realizations must be positive")
     files = sorted(
         path for path in args.input_dir.glob("gw_hosts_*_r????.hdf5")
         if realization_info(path)[0] in args.models
     )
     expected = {
-        f"{model}_r{run:04d}" for model in args.models for run in range(10)
+        f"{model}_r{run:04d}"
+        for model in args.models
+        for run in range(args.realizations)
     }
     found = {path.stem.removeprefix("gw_hosts_") for path in files}
     if found != expected:
         missing = sorted(expected - found)
         unexpected = sorted(found - expected)
-        raise ValueError(f"Expected exactly 20 realizations; missing={missing}, unexpected={unexpected}")
+        raise ValueError(
+            f"Expected exactly {len(expected)} realizations; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
 
     for source_path in files:
         model_tag, realization = realization_info(source_path)

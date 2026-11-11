@@ -148,8 +148,11 @@ the low/high truncated-normal component parameters and the unnormalised
 `bbh_pairing_weight_hh` weights.  This model draws the LL, LH, or HH pairing
 class before drawing component masses, so a bimodal component distribution can
 produce LL, LH, and HH chirp-mass features.  The defaults suppress LH but are
-not an LVK fit or a replacement for population synthesis; record every
-overridden parameter in forecast products.
+not an LVK fit or a replacement for population synthesis.  The qualitative
+motivation is the bimodal-remnant scenario discussed by Schneider,
+Podsiadlowski, and Laplace (2023), *Bimodal black-hole mass distribution and
+chirp masses of binary black-hole mergers*, [arXiv:2305.02380](https://arxiv.org/abs/2305.02380).
+Record every overridden parameter in forecast products.
 
 ## Recommended next implementation choices
 
