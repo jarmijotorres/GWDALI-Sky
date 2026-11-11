@@ -121,15 +121,22 @@ def catalogue_source_from_row(row):
     return {name: float(row[name]) for name in GWDALI_COLUMNS}
 
 
-def gwdali_source_from_row(row, distance_parameter="dL"):
+def gwdali_source_from_row(
+    row, distance_parameter="dL", mass_parameterization="m1_m2"
+):
     """Convert a stored row to the parameterisation required by GWDALI.
 
-    The catalogue stores dL in Gpc. For Doublet calculations we can instead
-    pass inv_dL = 1/dL in Gpc^-1, while leaving the stored catalogue unchanged.
+    The catalogue stores detector-frame component masses and dL in Gpc.  For
+    Fisher localisation it can instead pass `(Mc, eta)` and `inv_dL = 1/dL`,
+    while leaving the stored catalogue unchanged.
     """
     if distance_parameter not in ("dL", "inv_dL"):
         raise ValueError(
             "distance_parameter must be either 'dL' or 'inv_dL'"
+        )
+    if mass_parameterization not in ("m1_m2", "mc_eta"):
+        raise ValueError(
+            "mass_parameterization must be either 'm1_m2' or 'mc_eta'"
         )
 
     source = catalogue_source_from_row(row)
@@ -137,6 +144,14 @@ def gwdali_source_from_row(row, distance_parameter="dL"):
     # GWDALI sky-coordinate convention
     source["RA"] = float(np.degrees(source["RA"]))
     source["Dec"] = float(np.degrees(source["Dec"]))
+
+    if mass_parameterization == "mc_eta":
+        m1 = source.pop("m1")
+        m2 = source.pop("m2")
+        total_mass = m1 + m2
+        eta = m1 * m2 / total_mass**2
+        source["Mc"] = (m1 * m2) ** (3.0 / 5.0) / total_mass ** (1.0 / 5.0)
+        source["eta"] = eta
 
     if distance_parameter == "inv_dL":
         dL = source.pop("dL")
@@ -157,7 +172,9 @@ def get_catalogue_source(catalog, index):
     return catalogue_source_from_row(catalog[index])
 
 
-def get_gwdali_source(catalog, index, distance_parameter="dL"):
+def get_gwdali_source(
+    catalog, index, distance_parameter="dL", mass_parameterization="m1_m2"
+):
     """Return one checked source in the units expected by GWDALI."""
     index = int(index)
 
@@ -169,6 +186,7 @@ def get_gwdali_source(catalog, index, distance_parameter="dL"):
     return gwdali_source_from_row(
         catalog[index],
         distance_parameter=distance_parameter,
+        mass_parameterization=mass_parameterization,
     )
 
 def iter_gwdali_sources(catalog, start=0, stop=None, step=1):

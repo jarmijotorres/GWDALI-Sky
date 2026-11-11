@@ -17,7 +17,7 @@ class PipelineStructureTests(unittest.TestCase):
         with patch.object(cli.importlib, 'import_module') as run, contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(cli.main(['--list']), 0)
         run.assert_not_called()
-        self.assertIn('doublet-parallel', output.getvalue())
+        self.assertIn('fisher-serial', output.getvalue())
 
     def test_dry_run_preserves_argument_boundaries(self):
         with patch.object(cli.importlib, 'import_module') as run, contextlib.redirect_stdout(io.StringIO()) as output:
@@ -62,7 +62,7 @@ class PipelineStructureTests(unittest.TestCase):
         from skysim_gw.settings import common, snr, localize, population, catalogue
         self.assertEqual(snr.BASE_DIR, common.BASE_DIR)
         self.assertEqual(population.SOURCE_FILE.parent, common.BASE_DIR)
-        self.assertEqual(localize.NPOINTS, 300)
+        self.assertEqual(localize.METHOD, "Fisher")
         self.assertEqual(localize.MAX_NEW_SOURCES, 9)
         self.assertEqual(catalogue.ZF, 3.5)  # Deliberately preserved standalone example.
         self.assertEqual(snr.NETWORK_SNR_THRESHOLD, 12.0)

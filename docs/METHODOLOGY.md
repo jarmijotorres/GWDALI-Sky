@@ -97,7 +97,7 @@ The SNR catalogue evaluates each prepared source in the detector network and rec
 
 ### 7. Localisation
 
-Fisher localisation is the Gaussian baseline. Doublet localisation uses the same source and detector setup but retains the DALI higher-order information and samples the resulting non-Gaussian approximation with `nestle`. The production Doublet files contain the actual posterior samples in `(RA, Dec, inv_dL, iota, psi, phi_coal)` order, together with compact diagnostics.
+The production localisation uses a Fisher approximation with the free-parameter order `(RA, Dec, inv_dL, Mc, eta, iota, psi, phi_coal)`. `Mc` is detector-frame chirp mass and `eta` is symmetric mass ratio; the inverse Fisher matrix is the local Gaussian covariance, so sky and distance errors are marginalized over these mass parameters and the extrinsic angles.
 
 The Fisher and Doublet catalogues must be matched by the original prepared-catalogue `source_index`; they must not be matched by the ordinal position inside a filtered detected list.
 
@@ -142,7 +142,7 @@ The current detection configuration requires network SNR ≥ 12, at least two de
 ### Fisher and Doublet localisation
 
 - `test_gwdali_localization_one_source.py` — one-source Fisher/localisation validation, matrix extraction, and covariance-area checks.
-- `compute_gwdali_localization_catalogue.py` — serial catalogue localisation with atomic checkpointing. It stores Fisher matrices, Doublet posterior covariance, summary sky areas, uncertainties, correlations, runtime, and status fields.
+- `compute_gwdali_localization_catalogue.py` — serial Fisher catalogue localisation with atomic checkpointing. It stores Fisher matrices, inverse-Fisher covariances, summary sky areas, uncertainties, correlations, runtime, and status fields.
 - `gwdali_doublet_parallel.py` — generic one-node multiprocessing driver. It uses `spawn`, limits native numerical-library threads, skips existing `source_XXXXXX.npz` files, and atomically writes one compressed NPZ per event.
 - `gwdali_doublet_serial_adapter.py` — adapter exposing the serial GWDALI calculation as `run_event(source_index)` for the parallel driver.
 - `compare_fisher_localization.py` — matches Fisher and Doublet results by original `source_index`, reports area/error ratios, and writes comparison plots and NPZ output.

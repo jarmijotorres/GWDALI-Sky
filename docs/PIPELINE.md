@@ -137,13 +137,13 @@ also recognizes `s22_rXXXX`.
 
 Edit `skysim_gw/settings/common.py` for the shared NERSC base directory, BBH/BHNS/BNS selection, redshift bounds, waveform approximants, frequency range, and frequency-grid size. The `/pscratch/...` and `/global/...` paths are deliberately unchanged placeholders. Stage settings derive output directories from the shared base directory.
 
-Inspect the other files in `skysim_gw/settings/` for stage-specific options: sampling seed and input host file (`population.py`), SNR thresholds and checkpointing (`snr.py`), Doublet settings (`localize.py`), map resolution and support (`fisher_maps.py`), and diagnostic paths/settings. Values are imported when Python starts; restart the process after editing settings. `PopulationConfig` in `population.py` retains the configured distribution parameters and can be passed explicitly to sampling functions.
+Inspect the other files in `skysim_gw/settings/` for stage-specific options: sampling seed and input host file (`population.py`), SNR thresholds and checkpointing (`snr.py`), Fisher-localisation settings (`localize.py`), map resolution and support (`fisher_maps.py`), and diagnostic paths/settings. Values are imported when Python starts; restart the process after editing settings. `PopulationConfig` in `population.py` retains the configured distribution parameters and can be passed explicitly to sampling functions.
 
 The standalone catalogue demonstration retains its original different defaults: `/pscratch/sd/j/jatorres/data/lsst/SkySim5000/GWInputCatalogs` and `zf=3.5`. Production stages explicitly pass their configured catalogue directory and redshift limits, so they use the shared `NumberCountMaps/GWInputCatalogs` path and `zf=0.8`.
 
 Existing JSON interfaces and command-line interfaces are preserved. Rate-target and host-assignment JSON files were **not supplied**, but are unnecessary when starting from existing seeds. Their default filenames resolve in the working directory, or provide absolute paths with `--config`. Recover the validated NERSC versions; no scientific survey area, observing duration, mass limits, or host-selection defaults have been invented here. Required JSON keys are listed by `load_config()` in the respective stage modules.
 
-Parallel Doublet retains `GWDALI_FSIZE` (default 3000), `GWDALI_NPOINTS` (default 3000), and `GWDALI_SERIAL_MODULE` (now defaulting to `skysim_gw.stages.localize`). Its adapter continues to include KAGRA. Serial Doublet retains `NPOINTS=300` and `MAX_NEW_SOURCES=9`; set the latter to `None` for an unrestricted serial run. These differing defaults have deliberately not been harmonized without numerical validation. The parallel parameter-order contract remains `(RA, Dec, inv_dL, iota, psi, phi_coal)`.
+The production localisation stage is serial Fisher inference. It uses numerical waveform derivatives, detector-frame `(Mc, eta)`, and the free-parameter order `(RA, Dec, inv_dL, Mc, eta, iota, psi, phi_coal)`. Set `MAX_NEW_SOURCES=None` for an unrestricted production run.
 
 Use the Python environment that passed validation on NERSC, including NumPy, SciPy, Astropy, h5py, healpy, matplotlib, GWDALI, nestle, LAL/waveform dependencies, and, only for optional NERSC seed building, MPI/GCRCatalogs. Export its actual package versions before migration. `pyproject.toml` packages the code but does not attempt to reconstruct an unknown scientific environment or install GWDALI. From the validated environment, optionally install with `python -m pip install --no-deps -e .`; this enables `skysim-gw` as an equivalent launcher.
 
@@ -160,13 +160,11 @@ Each command runs one stage, allowing MPI and one-node multiprocessing to retain
 | SNR catalogue | `snr` | Injection NPZ → checkpointed SNR NPZ |
 | Detection selection | `detect SNR_FILE OUTPUT.txt` | SNR completion/success/detection masks → original row indices |
 | One-source Fisher check | `check-localisation` | Detected injection + SNR → diagnostic |
-| Serial Doublet | `doublet-serial` | Injection + SNR → covariance/diagnostic summary NPZ |
-| Parallel Doublet | `doublet-parallel ...` | Detected indices + injection/SNR → actual `source_XXXXXX.npz` samples |
-| Comparison | `compare` | Existing Fisher + serial Doublet summaries → matched comparisons |
+| Serial Fisher | `fisher-serial` | Injection + SNR → Fisher covariance/diagnostic summary NPZ; varies `RA`, `Dec`, `inv_dL`, `Mc`, `eta`, `iota`, `psi`, and `phi_coal` |
+| Comparison | `compare` | Compare pre-existing Fisher and Doublet summaries, if available |
 | Fisher diagnostics | `diagnose-fisher` | Configured localisation catalogue → quality-control plots |
 | Localisation diagnostics | `diagnose-localisation` | One detected source → parameter/step-size comparisons |
 | Fisher maps | `fisher-maps` | Existing Fisher covariance + injections → HEALPix products |
-| Doublet maps | `doublet-maps ...` | Actual posterior files + injections + slices → HEALPix products |
 
 Prefix commands with `python -m skysim_gw`. The normal workflow starts from the seed-host HDF5:
 
@@ -180,23 +178,10 @@ python -m skysim_gw snr -- \
   --workers 32 --native-threads 1
 python -m skysim_gw detect /path/to/snr.npz /path/to/detected_indices.txt
 python -m skysim_gw check-localisation
-python -m skysim_gw doublet-serial
-python -m skysim_gw doublet-parallel \
-  --pipeline-module skysim_gw.doublet_adapter \
-  --input-file /path/to/skysim5000_BBH_gwdali_fh0_r0000_z0.0000_1.0000.npz \
-  --snr-file /path/to/SNR/skysim5000_BBH_lvk_snr_fh0_r0000_z0.0000_1.0000.npz \
-  --indices /path/to/detected_indices_fh0_r0000.txt \
-  --output-dir /path/to/doublet/fh0/r0000 \
-  --workers 32 --native-threads 1
-python -m skysim_gw doublet-maps \
-  --samples-dir /pscratch/.../GWInputCatalogs \
-  --injection-file /pscratch/.../skysim5000_BBH_gwdali_z0.0000_0.8000.npz \
-  --slice-file /global/.../redshift_slices.info \
-  --output /pscratch/.../Healpix/doublet_maps.npz \
-  --slice-output-dir /pscratch/.../Healpix/DoubletRedshiftSlices
+python -m skysim_gw fisher-serial
 ```
 
-The abbreviated `/path/...` arguments above are examples to replace; the original full paths remain in settings. Choose MPI resources for the target machine. For native CLI options, run `python -m skysim_gw doublet-parallel -- --help` (also supported for rate targets, host assignment, detection, and Doublet maps). Other stages use settings files and reject extra arguments at the unified launcher.
+The abbreviated `/path/...` arguments above are examples to replace; the original full paths remain in settings. For native CLI options, run `python -m skysim_gw snr -- --help` (also supported for rate targets, host assignment, and detection). Other stages use settings files and reject extra arguments at the unified launcher.
 
 ## Preserved diagnostics
 
@@ -214,8 +199,7 @@ The `test_*` scripts are scientific one-source diagnostics, not automated unit t
 
 ## Boundaries in the supplied collection
 
-- The supplied catalogue localisation implementation is Doublet-specific: it always extracts posterior samples. Changing `METHOD` to `Fisher` alone will not create a valid Fisher catalogue pipeline. The full Fisher catalogue generator described in the old workflow is absent; retain/recover that validated generator from NERSC. The supplied one-source Fisher check, Fisher diagnostics, Fisher map maker, and comparison tools are preserved.
-- `diagnose-fisher` retains its original product-name helper, which currently constructs a **Doublet** summary filename under its configured localisation directory. Check that input path against the actual Fisher product before using this diagnostic; the refactor does not silently change the scientific input.
+- The serial localisation stage is Fisher-only. It converts the stored detector-frame component masses to the GWDALI `(Mc, eta)` parameterisation and uses the inverse Fisher matrix as its Gaussian covariance. The archived Doublet modules are not exposed through the active launcher.
 - `legacy/merge_gwdali_doublet_samples.py` was empty and remains an archived placeholder. Parallel posterior files do not automatically become the summary catalogue expected by `compare`; the serial Doublet stage produces that summary separately.
 - Galaxy-slice overlays were described as notebook code, but no notebook/overlay script or galaxy-map schema was supplied. Map generation is available; recover that plotting notebook to finish the exact previously validated visualisation.
 - Prepared-catalogue row IDs, output schemas, random sampling, thresholds, waveform calls, coordinate conversions, and posterior-map algorithms were preserved. Original HDF5 host-row indices are still not saved in the prepared NPZ.

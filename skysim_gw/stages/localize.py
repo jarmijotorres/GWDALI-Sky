@@ -1,4 +1,4 @@
-"""Compute Doublet sky localisations for all detected GW sources, serially.
+"""Compute Fisher sky localisations for all detected GW sources, serially.
 
 Inputs are the prepared injection NPZ and the completed SNR checkpoint. Only
 rows with ``success & detected & completed`` enter GWDALI.
@@ -7,9 +7,9 @@ The physical injection catalogue stores luminosity distance ``dL`` in Gpc.
 At the GWDALI localisation interface this is transformed to
 ``inv_dL = 1 / dL`` in Gpc^-1.
 
-For each source, GWDALI computes Fisher and Doublet tensors and samples the
-Doublet posterior with nested sampling. The posterior covariance is estimated
-from the returned equal-weight posterior samples.
+For each source, GWDALI computes a Fisher matrix in the detector-frame chirp
+mass and symmetric-mass-ratio parameterisation. Its inverse is the local
+Gaussian covariance used for all stored sky and distance summaries.
 
 Results retain the original ``source_index`` and are checkpointed atomically
 for safe resumption.
@@ -50,8 +50,6 @@ from skysim_gw.settings.localize import (
     ZF,
     APPROXIMANTS,
     METHOD,
-    SAMPLER,
-    NPOINTS,
     FMIN_HZ,
     FMAX_HZ,
     FSIZE,
@@ -67,17 +65,13 @@ FREE_PARAMS = (
     "RA",
     "Dec",
     "inv_dL",
+    "Mc",
+    "eta",
     "iota",
     "psi",
     "phi_coal",
 )
 
-
-# Use 300 for quick validation.
-# Restore to 3000 for the production calculation.
-
-
-# Testing:
 
 # Production:
 # MAX_NEW_SOURCES = None
@@ -313,112 +307,6 @@ def invert_fisher(fisher):
 
 
 # -----------------------------------------------------------------------------
-# Doublet posterior
-# -----------------------------------------------------------------------------
-
-def get_doublet_samples(raw_result):
-    """Return GWDALI's sampled Doublet posterior.
-
-    For the current GWDALI/nestle interface:
-
-        raw_result = (Results, Tensors, runtimes)
-
-    and
-
-        Results[0]
-
-    contains the posterior sample array with shape
-    (Nsamples, Nparameters).
-    """
-
-    if (
-        not isinstance(raw_result, tuple)
-        or len(raw_result) < 1
-    ):
-        raise TypeError(
-            "Expected GWDALI return "
-            "(Results, Tensors, runtimes)"
-        )
-
-    results = raw_result[0]
-
-    if (
-        not isinstance(results, (list, tuple))
-        or len(results) < 1
-    ):
-        raise TypeError(
-            "Expected GWDALI sampler Results "
-            "to be a list/tuple"
-        )
-
-    samples = np.asarray(
-        results[0],
-        dtype=float,
-    )
-
-    expected_ndim = len(FREE_PARAMS)
-
-    if samples.ndim != 2:
-        raise ValueError(
-            f"Unexpected posterior sample shape "
-            f"{samples.shape}"
-        )
-
-    if samples.shape[1] != expected_ndim:
-        raise ValueError(
-            f"Expected {expected_ndim} posterior "
-            f"parameters, got {samples.shape}"
-        )
-
-    if samples.shape[0] < 2:
-        raise ValueError(
-            "Doublet posterior contains fewer than "
-            "two samples"
-        )
-
-    if not np.all(np.isfinite(samples)):
-        raise ValueError(
-            "Posterior samples contain non-finite values"
-        )
-
-    return samples
-
-
-def get_doublet_covariance(raw_result):
-    """Estimate covariance from sampled Doublet posterior."""
-
-    samples = get_doublet_samples(
-        raw_result
-    )
-
-    covariance = np.cov(
-        samples,
-        rowvar=False,
-    )
-
-    covariance = 0.5 * (
-        covariance + covariance.T
-    )
-
-    if covariance.shape != (
-        len(FREE_PARAMS),
-        len(FREE_PARAMS),
-    ):
-        raise ValueError(
-            f"Unexpected Doublet covariance shape "
-            f"{covariance.shape}"
-        )
-
-    if not np.all(np.isfinite(covariance)):
-        raise ValueError(
-            "Doublet covariance contains "
-            "non-finite values"
-        )
-
-    return covariance
-
-
-# -----------------------------------------------------------------------------
 # Localization summary
 # -----------------------------------------------------------------------------
 
@@ -426,13 +314,13 @@ def localisation_summary(
     covariance,
     declination_deg,
 ):
-    """Return Gaussianised sky errors from Doublet posterior covariance.
+    """Return Gaussianised sky errors from the Fisher covariance.
 
     RA and Dec are in degrees. Therefore their covariance block is in
     degree^2. The spherical Jacobian contributes cos(declination).
 
-    The resulting area is a covariance-based Gaussian approximation to
-    the sampled Doublet posterior, not the exact 90% credible sky area.
+    The resulting area is the 90% credible ellipse of the local Gaussian
+    Fisher approximation.
     """
 
     i_ra = FREE_PARAMS.index("RA")
@@ -567,15 +455,21 @@ def main():
         include_kagra=True
     )
 
+    if METHOD != "Fisher":
+        raise ValueError(
+            "This stage is Fisher-only; set METHOD='Fisher' in "
+            "skysim_gw.settings.localize"
+        )
+
     metadata = {
         "source_type": source_type,
         "zi": float(ZI),
         "zf": float(ZF),
         "approximant": approximant,
         "method": METHOD,
-        "sampler": SAMPLER,
-        "npoints": int(NPOINTS),
+        "run_sampler": False,
         "diff_method": "numdiff",
+        "mass_parameterization": "Mc_eta_detector_frame",
         "distance_parameter": "inv_dL",
         "distance_parameter_unit": "Gpc^-1",
         "t_coal_fixed_s": 0.0,
@@ -591,9 +485,9 @@ def main():
         "coordinate_convention":
             "gwdali_ra_dec_degrees_v1",
         "saved_fisher":
-            "Fisher tensor returned with Doublet tensors",
+            "Fisher information matrix",
         "saved_covariance":
-            "Covariance of sampled Doublet posterior",
+            "Inverse Fisher matrix (Gaussian covariance)",
     }
 
     if RESUME and output_path.is_file():
@@ -660,8 +554,7 @@ def main():
         f"FreeParams: {FREE_PARAMS}"
     )
     print(
-        f"Method: {METHOD}; sampler: {SAMPLER}; "
-        f"npoints={NPOINTS}"
+        f"Method: {METHOD}; Gaussian covariance = inverse Fisher"
     )
     print(
         "Distance parameter: inv_dL [Gpc^-1]"
@@ -687,6 +580,7 @@ def main():
                 catalogue,
                 index,
                 distance_parameter="inv_dL",
+                mass_parameterization="mc_eta",
             )
 
             if not np.isclose(
@@ -707,10 +601,8 @@ def main():
                 list(FREE_PARAMS),
                 approx=approximant,
                 method=METHOD,
-                sampler=SAMPLER,
-                npoints=NPOINTS,
                 diff_method="numdiff",
-                run_sampler=True,
+                run_sampler=False,
 
                 # Keep False while validating.
                 # This also avoids GWDALI redirecting
@@ -725,9 +617,7 @@ def main():
                 fsize=FSIZE,
             )
 
-            # -------------------------------------------------------------
-            # Fisher tensor: diagnostics only
-            # -------------------------------------------------------------
+            # Fisher covariance used as the Gaussian localization posterior.
 
             tensors = unwrap_gwdali_result(
                 raw_result
@@ -757,26 +647,7 @@ def main():
                     "expected Fisher matrix"
                 )
 
-            _, fisher_used_pseudoinverse = (
-                invert_fisher(fisher)
-            )
-
-            # -------------------------------------------------------------
-            # Actual Doublet posterior
-            # -------------------------------------------------------------
-
-            samples = get_doublet_samples(
-                raw_result
-            )
-
-            covariance = np.cov(
-                samples,
-                rowvar=False,
-            )
-
-            covariance = 0.5 * (
-                covariance + covariance.T
-            )
+            covariance, fisher_used_pseudoinverse = invert_fisher(fisher)
 
             (
                 area_90,
@@ -831,11 +702,7 @@ def main():
                 "error_message"
             ][index] = ""
 
-            posterior_size = samples.shape[0]
-
         except Exception as error:
-
-            posterior_size = 0
 
             results[
                 "success"
@@ -886,7 +753,6 @@ def main():
                 f"processed={count:,}/{len(pending):,} "
                 f"index={index:,} "
                 f"status={status} "
-                f"samples={posterior_size:,} "
                 f"area90={area:.6g} deg2 "
                 f"event="
                 f"{results['runtime_s'][index]:.2f}s "

@@ -12,13 +12,11 @@ STAGES = {
     'snr': ('skysim_gw.stages.snr', 'Compute checkpointed SNR catalogue.'),
     'detect': ('skysim_gw.stages.detect', 'Write detected original row indices: SNR_FILE OUTPUT.'),
     'check-localisation': ('skysim_gw.diagnostics.one_localisation', 'Validate Fisher localisation for one detected source.'),
-    'doublet-serial': ('skysim_gw.stages.localize', 'Compute Doublet summary catalogue; default limit is 9 new sources.'),
-    'doublet-parallel': ('skysim_gw.stages.doublet_parallel', 'Write actual per-source Doublet posterior samples; see native --help.'),
-    'compare': ('skysim_gw.diagnostics.compare', 'Compare existing Fisher and serial Doublet summary catalogues.'),
+    'fisher-serial': ('skysim_gw.stages.localize', 'Compute Fisher Mc-eta localization catalogue; default limit is 9 new sources.'),
+    'compare': ('skysim_gw.diagnostics.compare', 'Compare pre-existing Fisher and Doublet summary catalogues.'),
     'diagnose-fisher': ('skysim_gw.diagnostics.fisher', 'Inspect catalogue quality; verify input filename before running.'),
     'diagnose-localisation': ('skysim_gw.diagnostics.localisation', 'Investigate one-source numerical behaviour.'),
     'fisher-maps': ('skysim_gw.stages.fisher_maps', 'Map an existing Fisher covariance catalogue.'),
-    'doublet-maps': ('skysim_gw.stages.doublet_maps', 'Map actual saved posterior samples using injected redshift.'),
 }
 
 def main(argv=None):
@@ -38,7 +36,7 @@ def main(argv=None):
     forwarded = args.stage_args
     if forwarded[:1] == ['--']:
         forwarded = forwarded[1:]
-    cli_stages = {'rate-targets', 'assign-hosts', 'snr', 'detect', 'doublet-parallel', 'doublet-maps'}
+    cli_stages = {'rate-targets', 'assign-hosts', 'snr', 'detect'}
     if forwarded and args.stage not in cli_stages:
         parser.error(f'{args.stage} uses skysim_gw/settings/; it accepts no command-line options')
     if args.dry_run:

@@ -6,13 +6,9 @@ INPUT_DIR = BASE_DIR / "GWInputCatalogs"
 
 SNR_DIR = INPUT_DIR / "SNR"
 
-OUTPUT_DIR = INPUT_DIR / "LocalizationDoublet"
+OUTPUT_DIR = INPUT_DIR / "LocalizationFisher"
 
-METHOD = "Doublet"
-
-SAMPLER = "nestle"
-
-NPOINTS = 300
+METHOD = "Fisher"
 
 FISHER_RCOND = 1.0e-12
 

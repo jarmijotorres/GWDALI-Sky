@@ -4,7 +4,7 @@ from .common import (BASE_DIR, REDSHIFT_SLICE_FILE, SOURCE_TYPE, ZI, ZF)
 
 INPUT_DIR = BASE_DIR / "GWInputCatalogs"
 
-LOCALISATION_DIR = INPUT_DIR / "Localization"
+LOCALISATION_DIR = INPUT_DIR / "LocalizationFisher"
 
 OUTPUT_DIR = INPUT_DIR / "Healpix"
 
