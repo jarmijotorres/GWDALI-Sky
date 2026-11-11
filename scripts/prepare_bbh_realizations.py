@@ -4,6 +4,8 @@
 Each realization receives an independent, deterministic population RNG stream.
 Outputs are grouped by model (``OUTPUT_ROOT/fh0``, ``fh1``, or ``s22``),
 with the realization tag embedded in the NPZ filename to prevent overwrites.
+Multiple independent BBH-parameter draws can be generated from each fixed
+host-seed realization.
 """
 
 from __future__ import annotations
@@ -41,6 +43,13 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--draws-per-realization", type=int, default=1,
+        help=(
+            "Independent BBH-parameter draws per host-seed realization "
+            "(default: 1)"
+        ),
+    )
+    parser.add_argument(
         "--models",
         nargs="+",
         choices=("fh0", "fh1", "s22"),
@@ -58,7 +67,8 @@ def realization_info(path: Path):
     return match.group(1), int(match.group(2))
 
 
-def write_catalogue(path: Path, population, zi: float, zf: float, seed: int):
+def write_catalogue(path: Path, population, zi: float, zf: float, seed: int,
+                    host_realization: int, population_draw: int):
     table = population_to_gwdali_table(population)
     np.savez_compressed(
         path,
@@ -68,6 +78,8 @@ def write_catalogue(path: Path, population, zi: float, zf: float, seed: int):
         zi=np.asarray(zi),
         zf=np.asarray(zf),
         random_seed=np.asarray(seed),
+        host_realization=np.asarray(host_realization),
+        population_draw=np.asarray(population_draw),
         cosmology=np.asarray(OUTERRIM_COSMOLOGY.name),
         H0_km_s_Mpc=np.asarray(OUTERRIM_COSMOLOGY.H0.value),
         Omega_m=np.asarray(OUTERRIM_COSMOLOGY.Om0),
@@ -83,6 +95,8 @@ def main():
     args = parse_args()
     if args.realizations <= 0:
         raise ValueError("--realizations must be positive")
+    if args.draws_per_realization <= 0:
+        raise ValueError("--draws-per-realization must be positive")
     files = sorted(
         path for path in args.input_dir.glob("gw_hosts_*_r????.hdf5")
         if realization_info(path)[0] in args.models
@@ -103,27 +117,42 @@ def main():
 
     for source_path in files:
         model_tag, realization = realization_info(source_path)
-        # Separating model and realization identifiers gives every catalogue an
-        # independent but reproducible binary-population draw.
         model_index = {"fh0": 0, "fh1": 1, "s22": 2}[model_tag]
-        seed_sequence = np.random.SeedSequence([args.seed, model_index, realization])
-        rng = np.random.default_rng(seed_sequence)
-        stored_seed = int(seed_sequence.generate_state(1, dtype=np.uint64)[0])
         output_dir = args.output_root / model_tag
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / (
-            f"skysim5000_BBH_gwdali_{model_tag}_r{realization:04d}_"
-            f"z{args.zi:.4f}_{args.zf:.4f}.npz"
-        )
-        if output_path.exists() and not args.overwrite:
-            raise FileExistsError(f"Refusing to overwrite {output_path}")
-
         sources = read_sources_in_true_redshift_slice(
             source_path, args.zi, args.zf, ("BBH",)
         )["BBH"]
-        population = prepare_population("BBH", sources, rng, config=CONFIG)
-        write_catalogue(output_path, population, args.zi, args.zf, stored_seed)
-        print(f"{model_tag}_r{realization:04d}: {len(sources['redshift_true']):,} BBH -> {output_path}")
+        for draw in range(args.draws_per_realization):
+            # The model, host realization, and draw number form one stable,
+            # independent RNG stream for BBH masses, spins, and extrinsics.
+            seed_components = [args.seed, model_index, realization]
+            if args.draws_per_realization > 1:
+                seed_components.append(draw)
+            seed_sequence = np.random.SeedSequence(seed_components)
+            rng = np.random.default_rng(seed_sequence)
+            stored_seed = int(seed_sequence.generate_state(1, dtype=np.uint64)[0])
+            draw_tag = (
+                ""
+                if args.draws_per_realization == 1
+                else f"_draw{draw:04d}"
+            )
+            output_path = output_dir / (
+                f"skysim5000_BBH_gwdali_{model_tag}_r{realization:04d}"
+                f"{draw_tag}_z{args.zi:.4f}_{args.zf:.4f}.npz"
+            )
+            if output_path.exists() and not args.overwrite:
+                raise FileExistsError(f"Refusing to overwrite {output_path}")
+
+            population = prepare_population("BBH", sources, rng, config=CONFIG)
+            write_catalogue(
+                output_path, population, args.zi, args.zf, stored_seed,
+                realization, draw,
+            )
+            print(
+                f"{model_tag}_r{realization:04d} draw={draw:04d}: "
+                f"{len(sources['redshift_true']):,} BBH -> {output_path}"
+            )
 
 
 if __name__ == "__main__":
