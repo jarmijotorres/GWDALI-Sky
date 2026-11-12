@@ -1,4 +1,4 @@
-"""Adapter that reuses compute_gwdali_localization_catalogue.py."""
+"""Parallel Fisher adapter using the production Mc-eta parameterisation."""
 import importlib
 import os
 from pathlib import Path
@@ -65,30 +65,28 @@ def _load():
     _realization_tag = realization_tag(_input_catalogue_path)
 
 def run_event(source_index: int) -> dict:
-    """Run the existing Doublet/Nestle calculation for one catalogue row."""
+    """Run one Fisher localisation and return its Gaussian covariance."""
     _load()
     s = _serial
-    p = s.get_gwdali_source(_catalogue, int(source_index), distance_parameter="inv_dL")
+    p = s.get_gwdali_source(
+        _catalogue, int(source_index), distance_parameter="inv_dL",
+        mass_parameterization="mc_eta",
+    )
     if not np.isclose(p["t_coal"], 0.0, rtol=0.0, atol=1.0e-15):
         raise ValueError(f"Expected fixed t_coal=0; got {p['t_coal']}")
     raw = s.gw.GWDALI(
         p, _detectors, list(s.FREE_PARAMS),
-        approx=s.APPROXIMANTS[s.SOURCE_TYPE], method="Doublet",
-        sampler="nestle",
-        npoints=int(os.environ.get("GWDALI_NPOINTS", "3000")),
-        diff_method="numdiff", run_sampler=True,
+        approx=s.APPROXIMANTS[s.SOURCE_TYPE], method="Fisher",
+        diff_method="numdiff", run_sampler=False,
         hide_info=False, output_name=None, save_bilby_path=False,
         enable_jax_waveforms=False, fmin=s.FMIN_HZ, fmax=s.FMAX_HZ, fsize=s.FSIZE)
     tensors = s.unwrap_gwdali_result(raw)
     _, fisher = s.find_matrix(tensors, ("Fisher", "fisher", "FisherMatrix", "fisher_matrix"))
     if fisher is None or fisher.shape != (len(s.FREE_PARAMS),) * 2:
         raise ValueError("GWDALI did not return the expected Fisher matrix")
-    _, pinv = s.invert_fisher(fisher)
-    samples = s.get_doublet_samples(raw)  # raw[0][0]: actual Nestle posterior samples
-    covariance = np.cov(samples, rowvar=False)
-    covariance = 0.5 * (covariance + covariance.T)
+    covariance, pinv = s.invert_fisher(fisher)
     area, sr, sd, corr = s.localisation_summary(covariance, p["Dec"])
-    return {"samples": samples, "fisher": fisher, "covariance": covariance,
+    return {"fisher": fisher, "covariance": covariance,
             "input_catalog": str(_input_catalogue_path),
             "snr_catalog": str(_snr_catalogue_path),
             "realization_tag": _realization_tag,

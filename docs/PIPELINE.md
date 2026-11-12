@@ -160,7 +160,8 @@ Each command runs one stage, allowing MPI and one-node multiprocessing to retain
 | SNR catalogue | `snr` | Injection NPZ → checkpointed SNR NPZ |
 | Detection selection | `detect SNR_FILE OUTPUT.txt` | SNR completion/success/detection masks → original row indices |
 | One-source Fisher check | `check-localisation` | Detected injection + SNR → diagnostic |
-| Serial Fisher | `fisher-serial` | Injection + SNR → Fisher covariance/diagnostic summary NPZ; varies `RA`, `Dec`, `inv_dL`, `Mc`, `eta`, `iota`, `psi`, and `phi_coal` |
+| Serial Fisher | `fisher-serial ...` | Injection + SNR → Fisher covariance/diagnostic summary NPZ; varies `RA`, `Dec`, `inv_dL`, `Mc`, `eta`, `iota`, `psi`, and `phi_coal` |
+| Parallel Fisher | `fisher-parallel ...` | Detected indices + injection/SNR → one Fisher/covariance NPZ per source |
 | Comparison | `compare` | Compare pre-existing Fisher and Doublet summaries, if available |
 | Fisher diagnostics | `diagnose-fisher` | Configured localisation catalogue → quality-control plots |
 | Localisation diagnostics | `diagnose-localisation` | One detected source → parameter/step-size comparisons |
@@ -178,10 +179,21 @@ python -m skysim_gw snr -- \
   --workers 32 --native-threads 1
 python -m skysim_gw detect /path/to/snr.npz /path/to/detected_indices.txt
 python -m skysim_gw check-localisation
-python -m skysim_gw fisher-serial
+python -m skysim_gw fisher-serial -- \
+  --input-file /path/to/population.npz \
+  --snr-file /path/to/snr.npz \
+  --output-file /path/to/LocalizationFisher/fisher.npz \
+  --max-new-sources 5
+python -m skysim_gw fisher-parallel -- \
+  --pipeline-module skysim_gw.doublet_adapter \
+  --input-file /path/to/population.npz \
+  --snr-file /path/to/snr.npz \
+  --indices /path/to/detected_indices.txt \
+  --output-dir /path/to/LocalizationFisher/per_source \
+  --workers 32 --native-threads 1
 ```
 
-The abbreviated `/path/...` arguments above are examples to replace; the original full paths remain in settings. For native CLI options, run `python -m skysim_gw snr -- --help` (also supported for rate targets, host assignment, and detection). Other stages use settings files and reject extra arguments at the unified launcher.
+The abbreviated `/path/...` arguments above are examples to replace; the original full paths remain in settings. For native CLI options, run `python -m skysim_gw fisher-serial -- --help` (also supported for SNR, rate targets, host assignment, and detection). Use `--all` after a bounded smoke run to process every remaining detected source. Other stages use settings files and reject extra arguments at the unified launcher.
 
 ## Preserved diagnostics
 

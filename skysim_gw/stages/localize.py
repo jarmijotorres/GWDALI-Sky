@@ -16,6 +16,7 @@ for safe resumption.
 """
 
 from pathlib import Path
+import argparse
 import os
 import tempfile
 import time
@@ -399,7 +400,37 @@ def localisation_summary(
 # Main
 # -----------------------------------------------------------------------------
 
-def main():
+def parse_arguments(argv=None):
+    """Parse optional explicit product paths and a bounded smoke run."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input-file", type=Path)
+    parser.add_argument("--snr-file", type=Path)
+    parser.add_argument("--output-file", type=Path)
+    limit = parser.add_mutually_exclusive_group()
+    limit.add_argument(
+        "--max-new-sources", type=int,
+        help="Maximum new detected sources to localize in this run.",
+    )
+    limit.add_argument(
+        "--all", action="store_true",
+        help="Process every remaining detected source, overriding MAX_NEW_SOURCES.",
+    )
+    args = parser.parse_args(argv)
+    explicit_paths = (args.input_file, args.snr_file, args.output_file)
+    if any(path is not None for path in explicit_paths) and not all(
+        path is not None for path in explicit_paths
+    ):
+        parser.error(
+            "--input-file, --snr-file, and --output-file must be supplied together"
+        )
+    if args.max_new_sources is not None and args.max_new_sources <= 0:
+        parser.error("--max-new-sources must be positive")
+    return args
+
+
+def main(argv=None):
+
+    args = parse_arguments(argv)
 
     source_type = SOURCE_TYPE.upper()
     approximant = APPROXIMANTS[source_type]
@@ -409,21 +440,21 @@ def main():
         source_type,
         ZI,
         ZF,
-    )
+    ) if args.input_file is None else args.input_file
 
     snr_path = snr_output_path(
         SNR_DIR,
         source_type,
         ZI,
         ZF,
-    )
+    ) if args.snr_file is None else args.snr_file
 
     output_path = localization_output_path(
         OUTPUT_DIR,
         source_type,
         ZI,
         ZF,
-    )
+    ) if args.output_file is None else args.output_file
 
     catalogue, _ = load_gwdali_catalogue(
         injection_path
@@ -523,9 +554,15 @@ def main():
         eligible & ~completed
     )
 
-    if MAX_NEW_SOURCES is not None:
+    maximum_new_sources = (
+        None if args.all
+        else args.max_new_sources
+        if args.max_new_sources is not None
+        else MAX_NEW_SOURCES
+    )
+    if maximum_new_sources is not None:
         pending = pending[
-            :int(MAX_NEW_SOURCES)
+            :int(maximum_new_sources)
         ]
 
     print(

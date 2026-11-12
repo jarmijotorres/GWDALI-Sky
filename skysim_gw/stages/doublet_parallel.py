@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run independent GWDALI Doublet events on one multi-core node.
+"""Run independent GWDALI Fisher events on one multi-core node.
 
 The project-specific numerical code is deliberately kept behind ``--pipeline-module``.
 That module must expose ``run_event(source_index) -> dict`` and return at least
-``samples`` (N x 6), with columns ordered as FREE_PARAMS below.  It may also return
-any scalar products from the serial pipeline; those are persisted alongside samples.
+``fisher`` and ``covariance`` matrices in the FREE_PARAMS order below. It may
+also return scalar localisation products, which are persisted per source.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import time
 from multiprocessing import get_context
 
 
-FREE_PARAMS = ("RA", "Dec", "inv_dL", "iota", "psi", "phi_coal")
+FREE_PARAMS = ("RA", "Dec", "inv_dL", "Mc", "eta", "iota", "psi", "phi_coal")
 _RUN_EVENT = None
 _OUTPUT_DIR = None
 
@@ -74,12 +74,16 @@ def _one(index: int) -> tuple[int, str]:
     started = time.time()
     try:
         result = dict(_RUN_EVENT(index))
-        if "samples" not in result:
-            raise KeyError("run_event() did not return 'samples'")
-        samples = np.asarray(result["samples"])
-        if samples.ndim != 2 or samples.shape[1] != len(FREE_PARAMS):
-            raise ValueError(f"samples must have shape (N, 6), got {samples.shape}")
-        result["samples"] = samples
+        for name in ("fisher", "covariance"):
+            if name not in result:
+                raise KeyError(f"run_event() did not return {name!r}")
+            matrix = np.asarray(result[name], dtype=float)
+            if matrix.shape != (len(FREE_PARAMS), len(FREE_PARAMS)):
+                raise ValueError(
+                    f"{name} must have shape ({len(FREE_PARAMS)}, "
+                    f"{len(FREE_PARAMS)}), got {matrix.shape}"
+                )
+            result[name] = matrix
         result["source_index"] = np.int64(index)
         result["free_params"] = np.asarray(FREE_PARAMS)
         result["runtime_s_worker"] = np.float64(time.time() - started)

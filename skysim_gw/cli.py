@@ -13,6 +13,7 @@ STAGES = {
     'detect': ('skysim_gw.stages.detect', 'Write detected original row indices: SNR_FILE OUTPUT.'),
     'check-localisation': ('skysim_gw.diagnostics.one_localisation', 'Validate Fisher localisation for one detected source.'),
     'fisher-serial': ('skysim_gw.stages.localize', 'Compute Fisher Mc-eta localization catalogue; default limit is 9 new sources.'),
+    'fisher-parallel': ('skysim_gw.stages.doublet_parallel', 'Run independent Fisher Mc-eta localizations across workers.'),
     'compare': ('skysim_gw.diagnostics.compare', 'Compare pre-existing Fisher and Doublet summary catalogues.'),
     'diagnose-fisher': ('skysim_gw.diagnostics.fisher', 'Inspect catalogue quality; verify input filename before running.'),
     'diagnose-localisation': ('skysim_gw.diagnostics.localisation', 'Investigate one-source numerical behaviour.'),
@@ -36,7 +37,7 @@ def main(argv=None):
     forwarded = args.stage_args
     if forwarded[:1] == ['--']:
         forwarded = forwarded[1:]
-    cli_stages = {'rate-targets', 'assign-hosts', 'snr', 'detect'}
+    cli_stages = {'rate-targets', 'assign-hosts', 'snr', 'detect', 'fisher-serial', 'fisher-parallel'}
     if forwarded and args.stage not in cli_stages:
         parser.error(f'{args.stage} uses skysim_gw/settings/; it accepts no command-line options')
     if args.dry_run:
