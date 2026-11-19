@@ -108,7 +108,7 @@ def load_config(path):
     if len(set(source_types)) != len(source_types):
         raise ValueError("source_types must not contain duplicates")
     config["source_types"] = source_types
-    factor = config.get("event_oversample_factor", 1)
+    factor = config.get("event_oversample_factor", 8)
     if isinstance(factor, bool) or int(factor) != factor or int(factor) < 1:
         raise ValueError("event_oversample_factor must be a positive integer")
     config["event_oversample_factor"] = int(factor)
@@ -120,10 +120,14 @@ def load_targets(path, source_types=SOURCE_TYPES):
         zi = data["bins/zi"][:]
         zf = data["bins/zf"][:]
         mass_edges = data["bins/log_stellar_mass_edges"][:]
-        targets = {
-            source_type: data[f"drawn/{source_type}"][:].astype(np.int64)
-            for source_type in source_types
-        }
+        targets = {}
+        for source_type in source_types:
+            values = data[f"drawn/{source_type}"][:].astype(np.int64)
+            # Legacy target files contain one 2-D Poisson realization.  New
+            # files retain independent realizations along catalogue_id.
+            if values.ndim == 2:
+                values = values[None, :, :]
+            targets[source_type] = values
         expected = {
             source_type: data[f"expected/{source_type}"][:].astype(np.float64)
             for source_type in source_types
@@ -138,13 +142,18 @@ def load_targets(path, source_types=SOURCE_TYPES):
     if np.any(np.diff(mass_edges) <= 0.0):
         raise ValueError("Invalid stellar-mass edges in target file")
     for source_type in source_types:
-        if targets[source_type].shape != shape:
+        if targets[source_type].ndim != 3 or targets[source_type].shape[1:] != shape:
             raise ValueError(
                 f"drawn/{source_type} has shape {targets[source_type].shape}, "
-                f"expected {shape}"
+                f"expected (catalogue_id, {shape[0]}, {shape[1]})"
             )
         if np.any(targets[source_type] < 0):
             raise ValueError(f"Negative target count for {source_type}")
+    n_catalogues = next(iter(targets.values())).shape[0]
+    if n_catalogues > np.iinfo(np.uint16).max + 1:
+        raise ValueError("At most 65536 catalogue IDs can be stored")
+    if any(values.shape[0] != n_catalogues for values in targets.values()):
+        raise ValueError("All drawn source types must have the same catalogue axis")
     return zi, zf, mass_edges, targets, expected, target_metadata
 
 
@@ -352,7 +361,7 @@ def merge_distributed_reservoirs(comm, reservoirs, targets):
 
 def finalize_sources(merged, targets, availability, selection_seed,
                      event_oversample_factor=1):
-    """Create final per-type event records and handle deficient bins."""
+    """Create records, then randomly partition pooled hosts by catalogue ID."""
     rng = np.random.default_rng(int(selection_seed))
     final = {}
     assigned_grid = {}
@@ -363,6 +372,8 @@ def finalize_sources(merged, targets, availability, selection_seed,
         + [
             ("z_bin", "<i4"),
             ("mass_bin", "<i4"),
+            ("catalogue_id", "<u2"),
+            ("octant_copy", "u1"),
             ("sampled_with_replacement", "u1"),
             ("event_weight", "<f8"),
         ]
@@ -374,8 +385,10 @@ def finalize_sources(merged, targets, availability, selection_seed,
         assigned = np.zeros_like(targets[source_type], dtype=np.int64)
         replacements = np.zeros_like(targets[source_type], dtype=np.int64)
 
-        for bin_number, requested_value in enumerate(targets[source_type].ravel()):
-            requested = int(requested_value)
+        flattened = targets[source_type].reshape(targets[source_type].shape[0], -1)
+        for bin_number in range(flattened.shape[1]):
+            requested_by_catalogue = flattened[:, bin_number]
+            requested = int(requested_by_catalogue.sum())
             if requested == 0:
                 continue
             candidates = merged.get(
@@ -389,7 +402,6 @@ def finalize_sources(merged, targets, availability, selection_seed,
             n_unique = min(requested, candidates.size)
             chosen = candidates[:n_unique]
             replacement_flags = np.zeros(n_unique, dtype=np.uint8)
-
             if n_unique < requested:
                 extra_indices = rng.choice(
                     candidates.size, size=requested - n_unique, replace=True
@@ -401,17 +413,41 @@ def finalize_sources(merged, targets, availability, selection_seed,
                         np.ones(requested - n_unique, dtype=np.uint8),
                     )
                 )
-                replacements.ravel()[bin_number] = requested - n_unique
 
-            records = np.empty(chosen.size, dtype=output_dtype)
-            for name in CANDIDATE_DTYPE.names:
-                records[name] = chosen[name]
-            records["z_bin"] = bin_number // n_mass_bins
-            records["mass_bin"] = bin_number % n_mass_bins
-            records["sampled_with_replacement"] = replacement_flags
-            records["event_weight"] = 1.0 / float(event_oversample_factor)
-            pieces.append(records)
-            assigned.ravel()[bin_number] = chosen.size
+            # One pooled host reservoir is sufficient: the catalogue-level
+            # Poisson counts are independent, and this randomized partition
+            # makes the 100 output catalogues cheap to produce and split.
+            permutation = rng.permutation(chosen.size)
+            chosen = chosen[permutation]
+            replacement_flags = replacement_flags[permutation]
+            offset = 0
+            for catalogue_id, requested_in_catalogue in enumerate(
+                requested_by_catalogue
+            ):
+                requested_in_catalogue = int(requested_in_catalogue)
+                if requested_in_catalogue == 0:
+                    continue
+                stop = offset + requested_in_catalogue
+                catalogue_chosen = chosen[offset:stop]
+                catalogue_replacement_flags = replacement_flags[offset:stop]
+                records = np.empty(catalogue_chosen.size, dtype=output_dtype)
+                for name in CANDIDATE_DTYPE.names:
+                    records[name] = catalogue_chosen[name]
+                records["z_bin"] = bin_number // n_mass_bins
+                records["mass_bin"] = bin_number % n_mass_bins
+                records["catalogue_id"] = catalogue_id
+                base_count = requested_in_catalogue // event_oversample_factor
+                records["octant_copy"] = (
+                    np.arange(catalogue_chosen.size) // base_count
+                )
+                records["sampled_with_replacement"] = catalogue_replacement_flags
+                records["event_weight"] = 1.0 / float(event_oversample_factor)
+                pieces.append(records)
+                assigned[catalogue_id].ravel()[bin_number] = catalogue_chosen.size
+                replacements[catalogue_id].ravel()[bin_number] = int(
+                    catalogue_replacement_flags.sum()
+                )
+                offset = stop
 
         final[source_type] = (
             np.concatenate(pieces) if pieces else np.empty(0, dtype=output_dtype)
@@ -467,10 +503,11 @@ def write_output(path, config, config_path, targets_path, zi, zf, mass_edges,
                 records = final_sources[source_type]
                 group.attrs["n_sources"] = len(records)
                 group.attrs["n_requested"] = int(targets[source_type].sum())
-                group.attrs["n_poisson_drawn_before_oversampling"] = int(
+                group.attrs["n_poisson_drawn_before_oversampling_all_catalogues"] = int(
                     targets[source_type].sum()
                     // config["event_oversample_factor"]
                 )
+                group.attrs["n_catalogues"] = targets[source_type].shape[0]
                 group.attrs["n_replacement"] = int(
                     replacement_grid[source_type].sum()
                 )
@@ -525,6 +562,10 @@ def main():
     targets = oversample_targets(
         base_targets, config["event_oversample_factor"]
     )
+    selection_targets = {
+        source_type: values.sum(axis=0, dtype=np.int64)
+        for source_type, values in targets.items()
+    }
 
     GCRCatalogs.ConfigSource.set_config_source(dr=False)
     catalog = GCRCatalogs.load_catalog(config["catalog_name"])
@@ -562,7 +603,7 @@ def main():
     )
     my_native_pixels = all_native_pixels[rank::size]
     availability = np.zeros(
-        next(iter(targets.values())).shape, dtype=np.int64
+        next(iter(selection_targets.values())).shape, dtype=np.int64
     )
     reservoirs = {}
     filters = [
@@ -596,7 +637,7 @@ def main():
                 zi,
                 zf,
                 mass_edges,
-                targets,
+                selection_targets,
                 availability,
                 reservoirs,
                 config,
@@ -619,7 +660,7 @@ def main():
     total_rows = comm.reduce(rows_read, op=MPI.SUM, root=0)
     total_valid = comm.reduce(valid_rows, op=MPI.SUM, root=0)
     total_chunks = comm.reduce(chunks, op=MPI.SUM, root=0)
-    merged = merge_distributed_reservoirs(comm, reservoirs, targets)
+    merged = merge_distributed_reservoirs(comm, reservoirs, selection_targets)
 
     if rank == 0:
         final_sources, assigned_grid, replacement_grid = finalize_sources(
@@ -651,7 +692,12 @@ def main():
             "redshift_variable": "redshift_true",
             "source_types": ",".join(config["source_types"]),
             "event_oversample_factor": config["event_oversample_factor"],
+            "n_catalogues": next(iter(targets.values())).shape[0],
             "event_weight": 1.0 / config["event_oversample_factor"],
+            "catalogue_partition_method": (
+                "independent Poisson count grids; pooled host selection "
+                "randomly partitioned by catalogue_id"
+            ),
             "oversampling_interpretation": (
                 "Repeated sampling of one SkySim lightcone; not independent "
                 "sky area or reduced cosmic variance"
@@ -691,7 +737,8 @@ def main():
         )
         for source_type in targets:
             print(
-                f"{source_type}: requested={targets[source_type].sum():,} "
+                f"{source_type}: catalogues={targets[source_type].shape[0]} "
+                f"requested={targets[source_type].sum():,} "
                 f"assigned={len(final_sources[source_type]):,} "
                 f"replacement={replacement_grid[source_type].sum():,}",
                 flush=True,

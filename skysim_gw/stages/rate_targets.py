@@ -70,6 +70,12 @@ def load_config(path):
         raise ValueError("area_deg2 must be positive")
     if config["observing_years"] < 0.0:
         raise ValueError("observing_years must be non-negative")
+    n_catalogues = config.get("n_catalogues", 100)
+    if isinstance(n_catalogues, bool) or int(n_catalogues) != n_catalogues:
+        raise ValueError("n_catalogues must be a positive integer")
+    if int(n_catalogues) < 1:
+        raise ValueError("n_catalogues must be a positive integer")
+    config["n_catalogues"] = int(n_catalogues)
     return config
 
 
@@ -175,6 +181,10 @@ def write_output(path, config, config_path, zi, zf, mass_edges,
             )
             output.attrs["rate_units"] = "Gpc^-3 source-frame yr^-1 dex^-1"
             output.attrs["expected_count_axes"] = "redshift_bin,mass_bin"
+            output.attrs["drawn_count_axes"] = (
+                "catalogue_id,redshift_bin,mass_bin"
+            )
+            output.attrs["n_catalogues"] = config["n_catalogues"]
 
             bins = output.create_group("bins")
             bins.create_dataset("zi", data=zi)
@@ -199,6 +209,9 @@ def write_output(path, config, config_path, zi, zf, mass_edges,
                     source_type, data=drawn[source_type], dtype=np.int64
                 )
                 drawn_dataset.attrs["units"] = "Poisson-drawn events per bin"
+                drawn_dataset.attrs["axes"] = (
+                    "catalogue_id,redshift_bin,mass_bin"
+                )
 
                 summary.create_dataset(
                     f"expected_by_redshift_{source_type}",
@@ -206,12 +219,12 @@ def write_output(path, config, config_path, zi, zf, mass_edges,
                 )
                 summary.create_dataset(
                     f"drawn_by_redshift_{source_type}",
-                    data=drawn[source_type].sum(axis=1),
+                    data=drawn[source_type].sum(axis=2),
                 )
                 summary.attrs[f"expected_total_{source_type}"] = float(
                     expected[source_type].sum()
                 )
-                summary.attrs[f"drawn_total_{source_type}"] = int(
+                summary.attrs[f"drawn_total_all_catalogues_{source_type}"] = int(
                     drawn[source_type].sum(dtype=np.int64)
                 )
 
@@ -233,7 +246,15 @@ def main():
 
     rng = np.random.default_rng(int(config["poisson_seed"]))
     drawn = {
-        source_type: np.asarray(draw_poisson(values, rng), dtype=np.int64)
+        source_type: np.asarray(
+            draw_poisson(
+                np.broadcast_to(
+                    values, (config["n_catalogues"],) + values.shape
+                ),
+                rng,
+            ),
+            dtype=np.int64,
+        )
         for source_type, values in expected.items()
     }
 
@@ -242,10 +263,11 @@ def main():
     print(f"Area: {config['area_deg2']:.6f} deg^2")
     print(f"Observing time: {config['observing_years']} yr")
     print(f"Poisson seed: {config['poisson_seed']}")
+    print(f"Independent catalogues: {config['n_catalogues']}")
     for source_type in ("BBH", "BNS", "BHNS"):
         print(
             f"{source_type}: expected={expected[source_type].sum():,.3f}, "
-            f"drawn={drawn[source_type].sum(dtype=np.int64):,}"
+            f"drawn_all_catalogues={drawn[source_type].sum(dtype=np.int64):,}"
         )
 
     write_output(

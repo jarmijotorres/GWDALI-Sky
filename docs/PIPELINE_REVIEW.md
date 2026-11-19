@@ -68,8 +68,10 @@ A1/A3/A5 selection are explicit JSON model parameters and are retained in the
 target-file provenance.
 
 The required config key `model_name` selects the BBH rate function. `draw_mode`
-presently accepts only `independent_by_type`, meaning independent
-Poisson draws for BBH, BNS, and BHNS using one reproducible NumPy generator.
+presently accepts only `independent_by_type`, meaning independent Poisson draws
+for BBH, BNS, and BHNS using one reproducible NumPy generator. The production
+default `n_catalogues` is 100, and these realizations are retained on the
+leading `catalogue_id` axis of `drawn/<TYPE>`.
 
 ### Decisions to record before a production run
 
@@ -102,6 +104,7 @@ The rate-target JSON must include:
   "log_stellar_mass_max": 12.0,
   "dlog_stellar_mass": 0.1,
   "poisson_seed": 12345,
+  "n_catalogues": 100,
   "draw_mode": "independent_by_type",
   "overwrite": false
 }
@@ -118,7 +121,11 @@ Within each `(true-z, logMstar)` bin, it selects candidates by deterministic
 64-bit hash priority of galaxy ID. The selection is uniform without
 replacement while enough candidates exist. If a target bin is undersupplied,
 it fills the shortfall by sampling those candidates with replacement and marks
-the affected records and `replacement/<TYPE>` counts in the output HDF5.
+the affected records and `replacement/<TYPE>` counts in the output HDF5. For
+the default 100-catalogue target file, assignment preserves `catalogue_id` and
+an `octant_copy` (0--7) field on every source. Split later catalogues by
+`catalogue_id`; each one has its own Poisson count grid and uses
+`event_weight = 1/8`.
 
 Review this replacement fraction before treating the output as a host sample:
 it measures whether the requested rate targets are supportable by the simulated

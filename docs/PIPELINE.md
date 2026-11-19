@@ -56,11 +56,19 @@ host-assignment JSON, and preserve that JSON in each output.
 
 ### Event oversampling on one SkySim lightcone
 
-Set `event_oversample_factor` in the host-assignment JSON to a positive integer
-to draw that many copies of each already Poisson-drawn target count without
-rereading the catalogue. For example, `8` creates eight times as many events
-from the same SkySim5000 footprint. The output marks every event with
-`event_weight = 1/8` and records the factor in group and file provenance.
+The production default is 100 independently Poisson-drawn catalogues, each
+scaled from the SkySim5000 octant to a full-sky event count with
+`event_oversample_factor: 8`. Set `n_catalogues: 100` in the rate-target JSON
+and `event_oversample_factor: 8` in the host-assignment JSON. The target HDF5
+stores the count randoms as `drawn/<TYPE>[catalogue_id, z_bin, mass_bin]`.
+The host HDF5 stores `catalogue_id` and `octant_copy` for every source, so any
+one of the 100 catalogues can be selected later without rebuilding hosts.
+
+Each selected catalogue has `event_weight = 1/8`; do not use `1/800` when
+analysing an individual catalogue. Host rows are randomly partitioned among
+catalogue IDs after pooled selection, so they are disjoint while a bin has
+sufficient candidates. Reuse is permitted only in undersupplied bins and is
+marked by `sampled_with_replacement`.
 
 This is useful for reducing *GW event-sampling* noise in a fixed-sky bias
 calculation. It is not an eight-times-larger independent cosmological volume:
@@ -69,6 +77,12 @@ variance and footprint limitations must retain the original 5000-deg2
 interpretation.
 
 ```json
+// gw_rate_config.json
+"n_catalogues": 100
+```
+
+```json
+// gw_host_assignment_config.json
 "event_oversample_factor": 8
 ```
 

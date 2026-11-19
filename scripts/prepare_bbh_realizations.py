@@ -36,6 +36,11 @@ def parse_args():
     parser.add_argument("--zf", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument(
+        "--catalogue-id",
+        type=int,
+        help="Select one stored catalogue_id from a multi-catalogue host file",
+    )
+    parser.add_argument(
         "--realizations", type=int, default=10,
         help=(
             "Number of consecutively numbered realizations to prepare "
@@ -68,7 +73,8 @@ def realization_info(path: Path):
 
 
 def write_catalogue(path: Path, population, zi: float, zf: float, seed: int,
-                    host_realization: int, population_draw: int):
+                    host_realization: int, population_draw: int,
+                    catalogue_id: int | None):
     table = population_to_gwdali_table(population)
     np.savez_compressed(
         path,
@@ -80,6 +86,7 @@ def write_catalogue(path: Path, population, zi: float, zf: float, seed: int,
         random_seed=np.asarray(seed),
         host_realization=np.asarray(host_realization),
         population_draw=np.asarray(population_draw),
+        catalogue_id=np.asarray(-1 if catalogue_id is None else catalogue_id),
         cosmology=np.asarray(OUTERRIM_COSMOLOGY.name),
         H0_km_s_Mpc=np.asarray(OUTERRIM_COSMOLOGY.H0.value),
         Omega_m=np.asarray(OUTERRIM_COSMOLOGY.Om0),
@@ -121,12 +128,14 @@ def main():
         output_dir = args.output_root / model_tag
         output_dir.mkdir(parents=True, exist_ok=True)
         sources = read_sources_in_true_redshift_slice(
-            source_path, args.zi, args.zf, ("BBH",)
+            source_path, args.zi, args.zf, ("BBH",), args.catalogue_id
         )["BBH"]
         for draw in range(args.draws_per_realization):
             # The model, host realization, and draw number form one stable,
             # independent RNG stream for BBH masses, spins, and extrinsics.
             seed_components = [args.seed, model_index, realization]
+            if args.catalogue_id is not None:
+                seed_components.append(args.catalogue_id)
             if args.draws_per_realization > 1:
                 seed_components.append(draw)
             seed_sequence = np.random.SeedSequence(seed_components)
@@ -139,7 +148,11 @@ def main():
             )
             output_path = output_dir / (
                 f"skysim5000_BBH_gwdali_{model_tag}_r{realization:04d}"
-                f"{draw_tag}_z{args.zi:.4f}_{args.zf:.4f}.npz"
+                + (
+                    "" if args.catalogue_id is None
+                    else f"_c{args.catalogue_id:04d}"
+                )
+                + f"{draw_tag}_z{args.zi:.4f}_{args.zf:.4f}.npz"
             )
             if output_path.exists() and not args.overwrite:
                 raise FileExistsError(f"Refusing to overwrite {output_path}")
@@ -147,7 +160,7 @@ def main():
             population = prepare_population("BBH", sources, rng, config=CONFIG)
             write_catalogue(
                 output_path, population, args.zi, args.zf, stored_seed,
-                realization, draw,
+                realization, draw, args.catalogue_id,
             )
             print(
                 f"{model_tag}_r{realization:04d} draw={draw:04d}: "

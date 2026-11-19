@@ -121,7 +121,7 @@ HOST_PROVENANCE_FIELDS = (
     "log_sfr_fmr", "fmr_sfr_clipped",
     "metallicity_fmr_12logoh", "metallicity_fmr_log10_z",
     "fmr_mu", "fmr_valid", "fmr_extrapolated",
-    "event_weight",
+    "event_weight", "catalogue_id", "octant_copy", "sampled_with_replacement",
 )
 
 
@@ -129,12 +129,15 @@ HOST_PROVENANCE_FIELDS = (
 # Input
 # -----------------------------------------------------------------------------
 
-def read_sources_in_true_redshift_slice(path, zi, zf, source_types):
+def read_sources_in_true_redshift_slice(
+    path, zi, zf, source_types, catalogue_id=None
+):
     """Read the portable seed-host HDF5; no GCR or SkySim5000 access is needed.
 
     Expect /sources/{BBH,BHNS,BNS} groups with equally sized 1-D ra and dec
     datasets in degrees and dimensionless redshift_true. Read configured
     source types and retain finite coordinates with zi <= redshift_true < zf.
+    When ``catalogue_id`` is supplied, retain only that stored catalogue.
     Known host-provenance fields are retained when present so GWDALI products
     remain traceable to their SFR/FMR-derived host properties.
     """
@@ -172,6 +175,12 @@ def read_sources_in_true_redshift_slice(path, zi, zf, source_types):
                 & (redshift_true >= zi)
                 & (redshift_true < zf)
             )
+            if catalogue_id is not None:
+                if "catalogue_id" not in group:
+                    raise KeyError(
+                        f"Missing {group_path}/catalogue_id; cannot select a catalogue"
+                    )
+                selected &= np.asarray(group["catalogue_id"][:]) == catalogue_id
             ra = np.asarray(group["ra"][:], dtype=float)
             dec = np.asarray(group["dec"][:], dtype=float)
             selected &= np.isfinite(ra) & np.isfinite(dec)

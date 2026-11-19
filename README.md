@@ -75,6 +75,18 @@ spins, and `redshift_true`) plus provenance metadata. The full host-galaxy
 properties, such as galaxy ID and stellar mass, remain in the corresponding
 file under `Seeds/`.
 
+For a new 100-catalogue seed file, prepare one independently Poisson-drawn
+catalogue with `--catalogue-id 0` (through `99`). The output filename receives
+the corresponding `_c0000` tag and the binary-population RNG stream includes
+that ID:
+
+```bash
+python scripts/prepare_bbh_realizations.py \
+  --input-dir /path/to/GWseeds/Seeds \
+  --output-root /path/to/GWseeds/Populations \
+  --models s22 --realizations 1 --catalogue-id 0
+```
+
 Run SNR estimation per prepared realization by passing its explicit input and
 output paths. This preserves the realization tag rather than using the
 standard redshift-only filename:
