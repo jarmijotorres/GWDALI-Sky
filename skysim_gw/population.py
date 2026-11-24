@@ -167,34 +167,62 @@ def read_sources_in_true_redshift_slice(
                 if field not in group:
                     raise KeyError(f"Missing {group_path}/{field}")
 
-            # Redshift is read first so the usually-small selection can be
-            # applied immediately to the other one-dimensional datasets.
-            redshift_true = np.asarray(group["redshift_true"][:], dtype=float)
-            selected = (
-                np.isfinite(redshift_true)
-                & (redshift_true >= zi)
-                & (redshift_true < zf)
-            )
             if catalogue_id is not None:
+                # Catalogue IDs are a compact index for large multi-catalogue
+                # files. Find selected row numbers first, then read only those
+                # rows from the remaining (often multi-gigabyte) datasets.
                 if "catalogue_id" not in group:
                     raise KeyError(
                         f"Missing {group_path}/catalogue_id; cannot select a catalogue"
                     )
-                selected &= np.asarray(group["catalogue_id"][:]) == catalogue_id
-            ra = np.asarray(group["ra"][:], dtype=float)
-            dec = np.asarray(group["dec"][:], dtype=float)
-            selected &= np.isfinite(ra) & np.isfinite(dec)
+                rows = np.flatnonzero(
+                    np.asarray(group["catalogue_id"][:]) == catalogue_id
+                )
+                redshift_true = np.asarray(group["redshift_true"][rows], dtype=float)
+                selected = (
+                    np.isfinite(redshift_true)
+                    & (redshift_true >= zi)
+                    & (redshift_true < zf)
+                )
+                rows = rows[selected]
+                redshift_true = redshift_true[selected]
+                selected = np.ones(redshift_true.shape, dtype=bool)
+                ra = np.asarray(group["ra"][rows], dtype=float)
+                dec = np.asarray(group["dec"][rows], dtype=float)
+                provenance = {
+                    field: np.asarray(group[field][rows])
+                    for field in HOST_PROVENANCE_FIELDS if field in group
+                }
+            else:
+                redshift_true = np.asarray(group["redshift_true"][:], dtype=float)
+                selected = (
+                    np.isfinite(redshift_true)
+                    & (redshift_true >= zi)
+                    & (redshift_true < zf)
+                )
+                ra = np.asarray(group["ra"][:], dtype=float)
+                dec = np.asarray(group["dec"][:], dtype=float)
+                provenance = {
+                    field: np.asarray(group[field][:])
+                    for field in HOST_PROVENANCE_FIELDS if field in group
+                }
+                redshift_true = redshift_true[selected]
+                ra = ra[selected]
+                dec = dec[selected]
+                provenance = {
+                    field: values[selected]
+                    for field, values in provenance.items()
+                }
+                selected = np.ones(redshift_true.shape, dtype=bool)
+            valid_coordinates = np.isfinite(ra) & np.isfinite(dec)
 
             selected_sources[source_type] = {
-                "ra_deg": ra[selected],
-                "dec_deg": dec[selected],
-                "redshift_true": redshift_true[selected],
+                "ra_deg": ra[valid_coordinates],
+                "dec_deg": dec[valid_coordinates],
+                "redshift_true": redshift_true[selected][valid_coordinates],
             }
-            for field in HOST_PROVENANCE_FIELDS:
-                if field in group:
-                    selected_sources[source_type][field] = np.asarray(
-                        group[field][:]
-                    )[selected]
+            for field, values in provenance.items():
+                selected_sources[source_type][field] = values[selected][valid_coordinates]
 
     return selected_sources
 

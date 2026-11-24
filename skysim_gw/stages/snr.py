@@ -274,7 +274,7 @@ def main(argv=None):
         if arguments.output_file is not None
         else output_path(OUTPUT_DIR, source_type, ZI, ZF)
     )
-    catalogue, _ = load_gwdali_catalogue(input_path)
+    catalogue, input_metadata = load_gwdali_catalogue(input_path)
     detectors = get_lvk_detectors(include_kagra=INCLUDE_KAGRA)
     detector_labels = LVK_LABELS[:len(detectors)]
     approximant = APPROXIMANTS[source_type]
@@ -290,8 +290,10 @@ def main(argv=None):
 
     metadata = {
         "source_type": source_type,
-        "zi": float(ZI),
-        "zf": float(ZF),
+        # Prepared files carry their actual host redshift selection. Use that
+        # provenance in checkpoints instead of relying on unrelated settings.
+        "zi": float(input_metadata.get("zi", ZI)),
+        "zf": float(input_metadata.get("zf", ZF)),
         "approximant": approximant,
         "include_kagra": bool(INCLUDE_KAGRA),
         "fmin_hz": float(FMIN_HZ),

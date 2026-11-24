@@ -87,6 +87,106 @@ python scripts/prepare_bbh_realizations.py \
   --models s22 --realizations 1 --catalogue-id 0
 ```
 
+For `gw_hosts_s22_100cat.hdf5`, prepare 100 independent BBH mass, spin, and
+extrinsic-parameter draws for each stored catalogue (10,000 population
+catalogues total) with the dedicated batch helper:
+
+```bash
+python scripts/prepare_s22_100cat.py \
+  --input-file /path/to/GWseeds/gw_hosts_s22_100cat.hdf5 \
+  --output-root /path/to/GWseeds/Populations/s22_100cat \
+  --zi 0.0 --zf 0.5 --seed 12345
+```
+
+To prepare those samples and run GWdali SNR on all of them with one command,
+use the combined driver (which also defaults to `z < 0.5`):
+
+```bash
+python scripts/process_s22_100cat.py \
+  --input-file /path/to/GWseeds/gw_hosts_s22_100cat.hdf5 \
+  --population-root /path/to/GWseeds/Populations/s22_100cat \
+  --snr-root /path/to/GWseeds/Populations/s22_100cat/SNR \
+  --workers 16 --native-threads 1
+```
+
+Use `--dry-run` to preview the two stage commands. `--stage prepare` or
+`--stage snr` runs only one stage. The default `all` stage prepares the full
+selection, then runs all corresponding SNR files; it does not require you to
+launch 10,000 separate commands. A repeat run skips existing sample files and
+resumes existing SNR checkpoints. To divide work among scheduler jobs, set
+`--catalogue-start/--catalogue-stop` and/or `--draw-start/--draw-stop`; use the
+same ranges and output roots to resume them.
+
+It writes `cXXXX/*_drawXXXX_*.npz`, keeping all 100 population draws under
+their host catalogue ID. The deterministic RNG key is `(seed, catalogue ID,
+draw ID)`, so catalogue and draw ranges can be split across HPC jobs with
+`--catalogue-start/--catalogue-stop` and `--draw-start/--draw-stop`, then
+resumed using the same seed. Existing outputs are protected unless
+`--overwrite` is supplied. The helper validates the declared 100 catalogues
+and oversampling factor 8 before processing. Each population retains the
+selected host rows and records `catalogue_id`, `event_oversample_factor=8`,
+and `event_weight=1/8`; do not multiply the stored event count by eight or
+interpret the repeated lightcone as independent galaxy sky area.
+
+To run the GWdali SNR code across those 10,000 population files, first preview
+the input/output mapping, then run it:
+
+```bash
+python scripts/run_s22_100cat_snr.py \
+  --input-root /path/to/GWseeds/Populations/s22_100cat \
+  --output-root /path/to/GWseeds/Populations/s22_100cat/SNR \
+  --dry-run
+
+python scripts/run_s22_100cat_snr.py \
+  --input-root /path/to/GWseeds/Populations/s22_100cat \
+  --output-root /path/to/GWseeds/Populations/s22_100cat/SNR \
+  --workers 32 --native-threads 1
+```
+
+The SNR runner expects all 100 × 100 selected files by default and writes one
+checkpoint per input under matching `cXXXX/` directories. Each checkpoint
+resumes through the existing SNR stage. `--workers` controls how many
+catalogues are evaluated concurrently. Use `--catalogue-start/--catalogue-stop`
+and `--draw-start/--draw-stop` to split work across scheduler jobs; rerun the
+same range to resume interrupted checkpoints. For a quick smoke-sized
+workload, select a small range such as `--catalogue-start 0 --catalogue-stop 1
+--draw-start 0 --draw-stop 1` in both commands above.
+
+### Fisher-Gaussian realizations in HDF5
+
+After the population and SNR catalogues are ready, create Fisher localizations
+and sample their multivariate Gaussian approximations directly into one HDF5
+file per host seed catalogue:
+
+~~~bash
+python scripts/run_s22_fisher_hdf5.py \
+  --population-root /path/to/GWseeds/Populations/s22_100cat \
+  --snr-root /path/to/GWseeds/Populations/s22_100cat/SNR \
+  --output-root /path/to/GWseeds/Populations/s22_100cat/FisherSamples \
+  --workers 16 --native-threads 1 --gaussian-draws 100
+~~~
+
+The output is cXXXX.h5. It contains /draws/drawYYYY/ groups, one for each
+population draw. Within a group, source_index identifies the input-catalogue
+row and fisher_gaussian_samples has shape
+(number of detected events, gaussian-draws, 8). Its last axis follows
+free_params = [RA, Dec, inv_dL, Mc, eta, iota, psi, phi_coal]. The sample
+center is the injected parameter vector; its covariance is the inverse Fisher
+matrix. Samples and IDs are stored in HDF5; event properties and SNR values
+remain in the matched population and SNR files and can be joined using the
+catalogue ID, population draw ID, and source_index.
+
+The default is 100 Fisher-Gaussian vectors per detected event, in addition to
+the 100 population-draw groups. Adjust --gaussian-draws to control this
+separate Monte Carlo count; use 1 to save one vector per detected event.
+
+The master seed and event index determine each Gaussian stream, so reruns
+reproduce the same values. Completed event rows are checkpointed in HDF5 and
+resumed on rerun. The runner handles one seed catalogue at a time, keeping a
+single HDF5 writer; use catalogue ranges to split jobs without writing the
+same file concurrently. The legacy doublet-parallel NPZ mode remains available
+for its prior per-source output format.
+
 Run SNR estimation per prepared realization by passing its explicit input and
 output paths. This preserves the realization tag rather than using the
 standard redshift-only filename:
