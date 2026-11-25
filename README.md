@@ -152,10 +152,10 @@ same range to resume interrupted checkpoints. For a quick smoke-sized
 workload, select a small range such as `--catalogue-start 0 --catalogue-stop 1
 --draw-start 0 --draw-stop 1` in both commands above.
 
-### Fisher-Gaussian realizations in HDF5
+### Fisher-Gaussian parameters in HDF5
 
 After the population and SNR catalogues are ready, create Fisher localizations
-and sample their multivariate Gaussian approximations directly into one HDF5
+and save their multivariate Gaussian parameters into one HDF5
 file per host seed catalogue:
 
 ~~~bash
@@ -163,22 +163,16 @@ python scripts/run_s22_fisher_hdf5.py \
   --population-root /path/to/GWseeds/Populations/s22_100cat \
   --snr-root /path/to/GWseeds/Populations/s22_100cat/SNR \
   --output-root /path/to/GWseeds/Populations/s22_100cat/FisherSamples \
-  --workers 16 --native-threads 1 --gaussian-draws 100
+  --workers 16 --native-threads 1
 ~~~
 
 The output is cXXXX.h5. It contains /draws/drawYYYY/ groups, one for each
 population draw. Within a group, source_index identifies the input-catalogue
-row and fisher_gaussian_samples has shape
-(number of detected events, gaussian-draws, 8). Its last axis follows
-free_params = [RA, Dec, inv_dL, Mc, eta, iota, psi, phi_coal]. The sample
-center is the injected parameter vector; its covariance is the inverse Fisher
-matrix. Samples and IDs are stored in HDF5; event properties and SNR values
-remain in the matched population and SNR files and can be joined using the
-catalogue ID, population draw ID, and source_index.
-
-The default is 100 Fisher-Gaussian vectors per detected event, in addition to
-the 100 population-draw groups. Adjust --gaussian-draws to control this
-separate Monte Carlo count; use 1 to save one vector per detected event.
+row. The datasets mean, fisher, and covariance have shapes (events, 8),
+(events, 8, 8), and (events, 8, 8). Parameter order is
+[RA, Dec, inv_dL, Mc, eta, iota, psi, phi_coal]. The mean is the injected
+parameter vector and covariance is the inverse Fisher matrix. Join source
+properties using the catalogue ID, population draw ID, and source_index.
 
 The master seed and event index determine each Gaussian stream, so reruns
 reproduce the same values. Completed event rows are checkpointed in HDF5 and

@@ -167,9 +167,7 @@ RA, Dec, inv_dL, Mc, eta, iota, psi, phi_coal
 
 The Gaussian mean is the injected parameter vector from the population row,
 transformed to the GWDALI parameterization. The covariance is the inverse
-Fisher matrix. The code generates Fisher-Gaussian parameter vectors
-deterministically from (master seed, host catalogue ID, population draw ID,
-source index).
+Fisher matrix. No Gaussian samples are generated.
 
 The result is one HDF5 per host-seed catalogue:
 
@@ -185,7 +183,9 @@ Each file contains one group per population draw:
 ~~~text
 /draws/draw0000/
   source_index                 (number of detected events,)
-  fisher_gaussian_samples      (events, gaussian draws per event, 8)
+  mean                         (events, 8)
+  fisher                       (events, 8, 8)
+  covariance                   (events, 8, 8)
   completed                    (events,)
   success                      (events,)
   error_message                (events,)
@@ -193,13 +193,10 @@ Each file contains one group per population draw:
 /draws/draw0099/
 ~~~
 
-The sample array is chunked and gzip-compressed. Its last dimension follows
-the parameter order above. Units are RA and Dec in degrees, inv_dL in Gpc^-1,
-Mc in detector-frame solar masses, eta dimensionless, and iota, psi, and
-phi_coal in radians. The HDF5 stores samples, source indices, progress status,
-and enough metadata to identify the population and SNR inputs. It does not
-duplicate the event-property or SNR tables; join those from the matched NPZ
-files using host catalogue ID, population draw ID, and source_index.
+The parameter order is given above. Units are RA and Dec in degrees, inv_dL
+in Gpc^-1, Mc in detector-frame solar masses, eta dimensionless, and iota,
+psi, and phi_coal in radians. Join event properties and SNR values from the
+matched NPZ files using catalogue ID, population draw ID, and source_index.
 
 The HDF5 file is opened in append mode and receives one population-draw group
 at a time. Only one process writes a given HDF5 file; Fisher events run in
@@ -207,16 +204,12 @@ parallel and the parent process writes results. Do not run concurrent jobs
 against the same cXXXX.h5. Existing completed event rows are skipped on
 rerun; incomplete or failed rows are retried.
 
-The number of Fisher-Gaussian vectors per detected event is independent of
-the 100 population draws. It currently defaults to 100 and is set with
---gaussian-draws. Use --gaussian-draws 1 for one vector per detected event.
-
 ~~~bash
 python scripts/run_s22_fisher_hdf5.py \
   --population-root /path/to/GWseeds/Populations/s22_100cat \
   --snr-root /path/to/GWseeds/Populations/s22_100cat/SNR \
   --output-root /path/to/GWseeds/Populations/s22_100cat/FisherSamples \
-  --workers 16 --native-threads 1 --gaussian-draws 100
+  --workers 16 --native-threads 1
 ~~~
 
 This is a Fisher-Gaussian approximation around the injected point, not a

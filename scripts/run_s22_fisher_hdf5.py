@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Save Fisher-Gaussian event samples in one HDF5 per S22 seed catalogue."""
+"""Save Fisher-Gaussian event parameters in one HDF5 per S22 seed catalogue."""
 
 from __future__ import annotations
 
@@ -32,9 +32,6 @@ def parse_args():
     parser.add_argument("--draw-start", type=int, default=0)
     parser.add_argument("--draw-stop", type=int, default=100,
                         help="Exclusive population-draw ID stop.")
-    parser.add_argument("--gaussian-draws", type=int, default=100,
-                        help="Fisher-Gaussian vectors per detected event.")
-    parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--native-threads", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
@@ -86,10 +83,8 @@ def main():
         raise ValueError("Require 0 <= catalogue-start < catalogue-stop <= 100")
     if not (0 <= args.draw_start < args.draw_stop <= 100):
         raise ValueError("Require 0 <= draw-start < draw-stop <= 100")
-    if args.gaussian_draws <= 0 or args.workers <= 0 or args.native_threads <= 0:
-        raise ValueError("gaussian-draws, workers, and native-threads must be positive")
-    if args.seed < 0:
-        raise ValueError("seed must be non-negative")
+    if args.workers <= 0 or args.native_threads <= 0:
+        raise ValueError("workers and native-threads must be positive")
 
     if not args.dry_run:
         args.output_root.mkdir(parents=True, exist_ok=True)
@@ -119,8 +114,6 @@ def main():
                     "--output-hdf5", str(hdf5_path),
                     "--catalogue-id", str(catalogue_id),
                     "--population-draw", str(draw),
-                    "--gaussian-draws", str(args.gaussian_draws),
-                    "--seed", str(args.seed),
                     "--indices", str(index_file),
                     "--input-file", str(population),
                     "--snr-file", str(snr),

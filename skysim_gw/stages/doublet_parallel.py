@@ -5,7 +5,7 @@ The project-specific numerical code is deliberately kept behind ``--pipeline-mod
 That module must expose ``run_event(source_index) -> dict`` and return at least
 ``fisher`` and ``covariance`` matrices in the FREE_PARAMS order below. It may
 also return scalar localisation products. Legacy mode writes per-source NPZ
-files; HDF5 mode samples the Fisher-Gaussian approximation and appends each
+files; HDF5 mode saves the Fisher-Gaussian parameters and appends each
 event result from the parent process into one population-draw group.
 """
 
@@ -120,28 +120,8 @@ def _one_result(index: int):
         return index, None, f"{type(exc).__name__}: {exc}"
 
 
-def _draw_from_covariance(mean, covariance, rng, number_of_draws):
-    """Draw from a local multivariate Gaussian, allowing roundoff-level PSD."""
-    import numpy as np
-    covariance = np.asarray(covariance, dtype=float)
-    covariance = 0.5 * (covariance + covariance.T)
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-    scale = max(float(np.max(np.abs(eigenvalues))), 1.0)
-    tolerance = np.finfo(float).eps * scale * len(mean) * 32.0
-    if eigenvalues[0] < -tolerance:
-        raise ValueError(
-            f"Fisher covariance is not positive semidefinite "
-            f"(minimum eigenvalue {eigenvalues[0]:.6g})"
-        )
-    transform = eigenvectors * np.sqrt(np.clip(eigenvalues, 0.0, None))
-    return np.asarray(mean) + rng.standard_normal(
-        (number_of_draws, len(mean))
-    ) @ transform.T
-
-
 def _initialize_hdf5_group(
     store, catalogue_id, population_draw, indices, input_file, snr_file,
-    gaussian_draws, master_seed,
 ):
     """Create or resume one draw group; only the parent process touches HDF5."""
     import h5py
@@ -149,7 +129,7 @@ def _initialize_hdf5_group(
     path = f"draws/draw{population_draw:04d}"
     if (
         "format" in store.attrs
-        and store.attrs["format"] != "fisher_gaussian_samples_v1"
+        and store.attrs["format"] != "fisher_gaussian_parameters_v1"
     ):
         raise ValueError("Output HDF5 has an unsupported format")
     if (
@@ -158,7 +138,7 @@ def _initialize_hdf5_group(
     ):
         raise ValueError("Output HDF5 belongs to a different seed catalogue")
     if path not in store:
-        store.attrs["format"] = "fisher_gaussian_samples_v1"
+        store.attrs["format"] = "fisher_gaussian_parameters_v1"
         store.attrs["seed_catalogue_id"] = int(catalogue_id)
         store.attrs["free_params"] = np.asarray(FREE_PARAMS, dtype="S")
         store.attrs["parameter_units"] = (
@@ -170,25 +150,12 @@ def _initialize_hdf5_group(
         group.attrs["population_draw"] = int(population_draw)
         group.attrs["population_file"] = str(input_file)
         group.attrs["snr_file"] = str(snr_file)
-        group.attrs["master_seed"] = int(master_seed)
-        group.attrs["gaussian_draws_per_event"] = int(gaussian_draws)
-        group.attrs["sampling"] = (
-            "multivariate normal at injected parameters with inverse-Fisher covariance"
-        )
+        group.attrs["sampling"] = "Gaussian centered at injected parameters; covariance is inverse Fisher"
         group.create_dataset("source_index", data=np.asarray(indices, dtype=np.int64))
-        if indices:
-            group.create_dataset(
-                "fisher_gaussian_samples",
-                shape=(len(indices), gaussian_draws, len(FREE_PARAMS)),
-                dtype="f8", chunks=(1, gaussian_draws, len(FREE_PARAMS)),
-                compression="gzip", compression_opts=4, shuffle=True,
-                fillvalue=np.nan,
-            )
-        else:
-            group.create_dataset(
-                "fisher_gaussian_samples",
-                shape=(0, gaussian_draws, len(FREE_PARAMS)), dtype="f8",
-            )
+        for name, shape in (("mean", (len(indices), len(FREE_PARAMS))),
+                            ("fisher", (len(indices), len(FREE_PARAMS), len(FREE_PARAMS))),
+                            ("covariance", (len(indices), len(FREE_PARAMS), len(FREE_PARAMS)))):
+            group.create_dataset(name, shape=shape, dtype="f8", fillvalue=np.nan)
         group.create_dataset("completed", data=np.zeros(len(indices), dtype=bool))
         group.create_dataset("success", data=np.zeros(len(indices), dtype=bool))
         group.create_dataset(
@@ -200,8 +167,6 @@ def _initialize_hdf5_group(
         if (
             int(group.attrs["catalogue_id"]) != int(catalogue_id)
             or int(group.attrs["population_draw"]) != int(population_draw)
-            or int(group.attrs["gaussian_draws_per_event"]) != int(gaussian_draws)
-            or int(group.attrs["master_seed"]) != int(master_seed)
             or group.attrs["population_file"] != str(input_file)
             or group.attrs["snr_file"] != str(snr_file)
             or not np.array_equal(group["source_index"][:], indices)
@@ -212,9 +177,8 @@ def _initialize_hdf5_group(
 
 def _save_hdf5_event(
     group, row, index, result, error, catalogue, catalogue_id,
-    population_draw, gaussian_draws, master_seed,
 ):
-    """Sample and save one event row in the parent process."""
+    """Save one event Gaussian and its Fisher matrix in the parent process."""
     import numpy as np
     from skysim_gw.catalogue import get_gwdali_source
     if error:
@@ -228,14 +192,9 @@ def _save_hdf5_event(
             mass_parameterization="mc_eta",
         )
         mean = np.asarray([source[name] for name in FREE_PARAMS], dtype=float)
-        sequence = np.random.SeedSequence(
-            [int(master_seed), int(catalogue_id), int(population_draw), int(index)]
-        )
-        samples = _draw_from_covariance(
-            mean, result["covariance"], np.random.default_rng(sequence),
-            gaussian_draws,
-        )
-        group["fisher_gaussian_samples"][row] = samples
+        group["mean"][row] = mean
+        group["fisher"][row] = result["fisher"]
+        group["covariance"][row] = result["covariance"]
         group["success"][row] = True
         group["error_message"][row] = ""
     except Exception as exc:
@@ -256,10 +215,6 @@ def main(argv=None) -> int:
                     help="Host seed-catalogue ID used in deterministic sample seeds.")
     ap.add_argument("--population-draw", type=int,
                     help="Population draw ID stored under /draws/drawXXXX.")
-    ap.add_argument("--gaussian-draws", type=int, default=100,
-                    help="Fisher-Gaussian realizations per detected event (default: 100).")
-    ap.add_argument("--seed", type=int, default=12345,
-                    help="Master seed for deterministic Fisher-Gaussian sampling.")
     ap.add_argument("--checkpoint-every", type=int, default=25,
                     help="Flush HDF5 progress after this many events.")
     ap.add_argument("--indices", required=True, help="text file: one detected catalogue index per line")
@@ -288,9 +243,8 @@ def main(argv=None) -> int:
             "HDF5 mode requires --input-file, --snr-file, --catalogue-id, "
             "and --population-draw"
         )
-    if (args.gaussian_draws <= 0 or args.seed < 0
-            or args.checkpoint_every <= 0):
-        ap.error("--gaussian-draws must be positive and --seed non-negative")
+    if args.checkpoint_every <= 0:
+        ap.error("--checkpoint-every must be positive")
 
     # Set limits in the parent before spawn/imports as well as in each child.
     _limit_native_threads(args.native_threads)
@@ -317,7 +271,7 @@ def main(argv=None) -> int:
         try:
             group = _initialize_hdf5_group(
                 store, args.catalogue_id, args.population_draw, indices,
-                args.input_file, args.snr_file, args.gaussian_draws, args.seed,
+                args.input_file, args.snr_file,
             )
         except Exception:
             store.close()
@@ -351,13 +305,12 @@ def main(argv=None) -> int:
                 ):
                     _save_hdf5_event(
                         group, row_for_index[index], index, result, error,
-                        catalogue, args.catalogue_id, args.population_draw,
-                        args.gaussian_draws, args.seed,
+                        catalogue, args.catalogue_id,
                     )
                     if count % args.checkpoint_every == 0:
                         store.flush()
                     print(
-                        f"{index}: {'failed: ' + error if error else 'sampled'}",
+                        f"{index}: {'failed: ' + error if error else 'saved'}",
                         flush=True,
                     )
                 store.flush()
