@@ -5,9 +5,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 import tempfile
 
 import numpy as np
+
+
+# Ensure spawned Fisher workers can import the project package when this
+# script is launched directly from the repository checkout.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def parse_args():

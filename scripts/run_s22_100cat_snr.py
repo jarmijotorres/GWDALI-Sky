@@ -8,6 +8,14 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 from pathlib import Path
 import re
+import sys
+
+
+# Also covers spawned ProcessPool workers when this script is run by path
+# without installing the project as a package.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 CATALOGUE_PATTERN = re.compile(
