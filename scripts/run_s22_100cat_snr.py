@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import redirect_stdout
 import os
 from pathlib import Path
 import re
@@ -44,17 +45,31 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_one_snr(input_path: str, output_path: str) -> str:
-    """Run one SNR catalogue in a reusable outer worker process."""
+def run_one_snr(input_path: str, output_path: str) -> tuple[str, int, int, int]:
+    """Run one SNR catalogue quietly and return a compact result summary."""
     from skysim_gw.stages.snr import main as snr_main
+    import numpy as np
 
-    snr_main([
-        "--input-file", input_path,
-        "--output-file", output_path,
-        "--workers", "1",
-        "--native-threads", "1",
-    ])
-    return input_path
+    # The stage reports source-level progress every few rows. Across thousands
+    # of catalogues that would flood the terminal/log; the batch runner reports
+    # compact file-level progress in the parent instead.
+    with open(os.devnull, "w") as quiet:
+        with redirect_stdout(quiet):
+            snr_main([
+                "--input-file", input_path,
+                "--output-file", output_path,
+                "--workers", "1",
+                "--native-threads", "1",
+            ])
+    with np.load(output_path, allow_pickle=False) as data:
+        results = data["results"]
+        completed = data["completed"].astype(bool)
+    return (
+        input_path,
+        int(completed.sum()),
+        int((completed & results["success"]).sum()),
+        int((completed & results["detected"]).sum()),
+    )
 
 
 def main():
@@ -110,12 +125,19 @@ def main():
             executor.submit(run_one_snr, str(input_path), str(output_path)): input_path
             for input_path, output_path in pairs
         }
+        totals = [0, 0, 0]
         for index, future in enumerate(as_completed(futures), start=1):
-            input_path = future.result()
-            print(
-                f"[{index:,}/{len(pairs):,}] SNR complete: {input_path}",
-                flush=True,
-            )
+            input_path, completed, successful, detected = future.result()
+            totals[0] += completed
+            totals[1] += successful
+            totals[2] += detected
+            if index % 100 == 0 or index == len(pairs):
+                print(
+                    f"files={index:,}/{len(pairs):,} "
+                    f"source_rows_completed={totals[0]:,} "
+                    f"successful={totals[1]:,} detected={totals[2]:,}",
+                    flush=True,
+                )
 
 
 if __name__ == "__main__":
