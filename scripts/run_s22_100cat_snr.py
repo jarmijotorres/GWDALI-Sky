@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("--draw-stop", type=int, default=100,
                         help="Exclusive draw ID stop")
     parser.add_argument("--workers", type=int, default=1,
-                        help="Catalogue files processed concurrently")
+                        help="Distinct host catalogues processed concurrently")
     parser.add_argument("--native-threads", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true",
                         help="List input/output pairs without computing SNR")
@@ -72,6 +72,28 @@ def run_one_snr(input_path: str, output_path: str) -> tuple[str, int, int, int]:
     )
 
 
+def run_catalogue_snr(
+    catalogue_id: int, pairs: list[tuple[Path, Path]]
+) -> tuple[int, int, int, int]:
+    """Run one host catalogue's population draws sequentially."""
+    totals = [0, 0, 0]
+    for index, (input_path, output_path) in enumerate(pairs, start=1):
+        _, completed, successful, detected = run_one_snr(
+            str(input_path), str(output_path)
+        )
+        totals[0] += completed
+        totals[1] += successful
+        totals[2] += detected
+        if index % 10 == 0 or index == len(pairs):
+            print(
+                f"c{catalogue_id:04d} draws={index:,}/{len(pairs):,} "
+                f"source_rows_completed={totals[0]:,} "
+                f"successful={totals[1]:,} detected={totals[2]:,}",
+                flush=True,
+            )
+    return catalogue_id, *totals
+
+
 def main():
     args = parse_args()
     if not (0 <= args.catalogue_start < args.catalogue_stop <= 100):
@@ -81,7 +103,7 @@ def main():
     if args.workers < 1 or args.native_threads < 1:
         raise ValueError("workers and native-threads must be positive")
 
-    pairs = []
+    pairs_by_catalogue = {}
     for input_path in sorted(args.input_root.glob("c????/*.npz")):
         match = CATALOGUE_PATTERN.fullmatch(input_path.name)
         if match is None:
@@ -97,7 +119,12 @@ def main():
                 "_gwdali_", "_lvk_snr_radec_deg_", 1
             )
         )
-        pairs.append((input_path, output_path))
+        pairs_by_catalogue.setdefault(catalogue_id, []).append(
+            (input_path, output_path)
+        )
+
+    pairs = [pair for catalogue_pairs in pairs_by_catalogue.values()
+             for pair in catalogue_pairs]
 
     expected = (
         (args.catalogue_stop - args.catalogue_start)
@@ -108,6 +135,15 @@ def main():
             f"Found {len(pairs)} prepared catalogues; expected {expected} "
             "for the selected catalogue/draw ranges"
         )
+
+    expected_draws = args.draw_stop - args.draw_start
+    for catalogue_id in range(args.catalogue_start, args.catalogue_stop):
+        count = len(pairs_by_catalogue.get(catalogue_id, ()))
+        if count != expected_draws:
+            raise FileNotFoundError(
+                f"Found {count} prepared catalogues for c{catalogue_id:04d}; "
+                f"expected {expected_draws} for the selected draw range"
+            )
 
     print(f"Selected {len(pairs):,} prepared catalogues")
     if args.dry_run:
@@ -120,24 +156,27 @@ def main():
         "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
     ):
         os.environ[variable] = str(args.native_threads)
-    with ProcessPoolExecutor(max_workers=args.workers) as executor:
+    catalogue_jobs = sorted(pairs_by_catalogue.items())
+    with ProcessPoolExecutor(
+        max_workers=min(args.workers, len(catalogue_jobs))
+    ) as executor:
         futures = {
-            executor.submit(run_one_snr, str(input_path), str(output_path)): input_path
-            for input_path, output_path in pairs
+            executor.submit(run_catalogue_snr, catalogue_id, catalogue_pairs): catalogue_id
+            for catalogue_id, catalogue_pairs in catalogue_jobs
         }
         totals = [0, 0, 0]
         for index, future in enumerate(as_completed(futures), start=1):
-            input_path, completed, successful, detected = future.result()
+            catalogue_id, completed, successful, detected = future.result()
             totals[0] += completed
             totals[1] += successful
             totals[2] += detected
-            if index % 100 == 0 or index == len(pairs):
-                print(
-                    f"files={index:,}/{len(pairs):,} "
-                    f"source_rows_completed={totals[0]:,} "
-                    f"successful={totals[1]:,} detected={totals[2]:,}",
-                    flush=True,
-                )
+            print(
+                f"catalogues={index:,}/{len(catalogue_jobs):,} "
+                f"finished=c{catalogue_id:04d} "
+                f"source_rows_completed={totals[0]:,} "
+                f"successful={totals[1]:,} detected={totals[2]:,}",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

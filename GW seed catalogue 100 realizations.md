@@ -122,9 +122,12 @@ the configured detector thresholds. SNR checkpoints resume unfinished rows
 and validate their input and detector metadata.
 
 The batch runner processes all matching input/output pairs in one command.
-The workers option is the number of population files processed concurrently;
-native-threads limits native math-library threads in each worker. For a
-machine with about 20 CPU cores, start with 16 workers and one native thread.
+The workers option is the number of distinct host catalogues processed
+concurrently. Each worker processes one catalogue's selected population draws
+sequentially, so the run spreads work across host-seed catalogues before
+processing multiple BBH draws from the same catalogue. Native-threads limits
+native math-library threads in each worker. For a machine with about 20 CPU
+cores, start with 16 workers and one native thread.
 
 ~~~bash
 python scripts/run_s22_100cat_snr.py \

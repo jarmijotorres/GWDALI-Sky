@@ -145,10 +145,13 @@ python scripts/run_s22_100cat_snr.py \
 
 The SNR runner expects all 100 × 100 selected files by default and writes one
 checkpoint per input under matching `cXXXX/` directories. Each checkpoint
-resumes through the existing SNR stage. `--workers` controls how many
-catalogues are evaluated concurrently. Use `--catalogue-start/--catalogue-stop`
-and `--draw-start/--draw-stop` to split work across scheduler jobs; rerun the
-same range to resume interrupted checkpoints. For a quick smoke-sized
+resumes through the existing SNR stage. `--workers` controls how many distinct
+host catalogues are evaluated concurrently; each worker processes that
+catalogue's selected draws sequentially. This spreads work across host-seed
+catalogues before processing many BBH draws from the same catalogue. Use
+`--catalogue-start/--catalogue-stop` and `--draw-start/--draw-stop` to split
+work across scheduler jobs; rerun the same range to resume interrupted
+checkpoints. For a quick smoke-sized
 workload, select a small range such as `--catalogue-start 0 --catalogue-stop 1
 --draw-start 0 --draw-stop 1` in both commands above.
 
